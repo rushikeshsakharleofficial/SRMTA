@@ -1,0 +1,24 @@
+#!/bin/sh
+# SRMTA DEB prerm — runs before package removal
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        # Stop service before removal
+        if [ -d /run/systemd/system ]; then
+            systemctl stop srmta.service 2>/dev/null || true
+            systemctl stop srmta.socket 2>/dev/null || true
+            systemctl disable srmta.service 2>/dev/null || true
+            systemctl disable srmta.socket 2>/dev/null || true
+        fi
+        ;;
+    upgrade)
+        # On upgrade, just stop gracefully — postinst will restart
+        if [ -d /run/systemd/system ]; then
+            systemctl stop srmta.service 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
