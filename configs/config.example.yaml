@@ -1,0 +1,153 @@
+# SRMTA Configuration File
+# Copy to /etc/srmta/config.yaml and adjust for your environment
+
+server:
+  hostname: "mta1.example.com"
+  listen_addr: ":8080"
+  max_workers: 100
+  shutdown_grace: "30s"
+
+smtp:
+  listen_addr: ":2525"
+  max_connections: 1000
+  max_message_size: 52428800  # 50MB
+  read_timeout: "60s"
+  write_timeout: "60s"
+  max_recipients: 100
+  require_auth: true
+  require_tls: false
+  banner_hostname: "mta1.example.com"
+  allowed_domains:
+    - "example.com"
+    - "mail.example.com"
+  enable_pipelining: true
+
+queue:
+  spool_dir: "/var/spool/srmta"
+  max_queue_depth: 500000
+  max_retries: 9
+  retry_intervals:
+    - "5m"
+    - "15m"
+    - "30m"
+    - "1h"
+    - "2h"
+    - "4h"
+    - "8h"
+    - "16h"
+    - "24h"
+  dead_letter_after: "72h"
+  journal_enabled: true
+  shard_count: 16
+  domain_buckets: 256
+  processing_workers: 50
+
+delivery:
+  max_concurrent: 500
+  per_domain_concurrency: 20
+  connection_timeout: "300s"
+  dial_timeout: "30s"
+  ehlo_timeout: "30s"
+  mail_timeout: "30s"
+  rcpt_timeout: "30s"
+  data_timeout: "120s"
+  pool_size: 50
+  pool_idle_timeout: "60s"
+
+dns:
+  servers:
+    - "8.8.8.8"
+    - "8.8.4.4"
+    - "1.1.1.1"
+  cache_ttl: "300s"
+  cache_size: 10000
+  timeout: "5s"
+  pool_size: 10
+  use_redis_cache: false
+  enable_dnssec: false
+
+ip_pool:
+  ips:
+    - address: "203.0.113.10"
+      version: 4
+      weight: 100
+      warm_up: false
+      max_rate: 0
+      disabled: false
+    - address: "203.0.113.11"
+      version: 4
+      weight: 100
+      warm_up: true
+      max_rate: 500
+      disabled: false
+    - address: "2001:db8::1"
+      version: 6
+      weight: 50
+      warm_up: false
+      max_rate: 0
+      disabled: false
+  health_window: "1h"
+  disable_threshold: 0.3
+  recovery_time: "30m"
+
+dkim:
+  enabled: true
+  default_key: "example.com:default"
+  keys:
+    - selector: "default"
+      domain: "example.com"
+      private_key_path: "/etc/srmta/dkim/example.com.key"
+      algorithm: "rsa-sha256"
+    - selector: "selector2"
+      domain: "mail.example.com"
+      private_key_path: "/etc/srmta/dkim/mail.example.com.key"
+      algorithm: "rsa-sha256"
+
+bounce:
+  hard_bounce_threshold: 0.05    # 5%
+  soft_bounce_threshold: 0.15    # 15%
+  complaint_threshold: 0.003     # 0.3%
+  sender_pause_enabled: true
+  suppression_list_enabled: true
+
+logging:
+  level: "info"        # debug, info, warn, error
+  format: "json"       # json, text
+  output: "stdout"     # stdout, file
+  file_path: "/var/log/srmta/srmta.log"
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 30
+  compress: true
+
+metrics:
+  enabled: true
+  listen_addr: ":9090"
+  path: "/metrics"
+
+database:
+  host: "${DB_HOST:localhost}"
+  port: 5432
+  user: "${DB_USER:srmta}"
+  password: "${DB_PASSWORD:changeme}"
+  dbname: "${DB_NAME:srmta}"
+  ssl_mode: "prefer"
+  max_open_conns: 25
+  max_idle_conns: 5
+
+redis:
+  addr: "${REDIS_ADDR:localhost:6379}"
+  password: "${REDIS_PASSWORD:}"
+  db: 0
+  pool_size: 10
+
+tls:
+  cert_file: "/etc/srmta/tls/server.crt"
+  key_file: "/etc/srmta/tls/server.key"
+  ca_file: "/etc/srmta/tls/ca.crt"
+  min_version: "1.2"
+
+rate_limit:
+  global_rate: 500       # emails/sec
+  per_domain_rate: 50    # emails/sec per domain
+  per_sender_rate: 100   # emails/sec per sender

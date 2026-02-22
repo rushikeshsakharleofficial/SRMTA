@@ -1,0 +1,200 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Delivery Rate (msgs/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(srmta_delivery_success_total[5m])",
+          "legendFormat": "Delivered/sec"
+        },
+        {
+          "expr": "rate(srmta_smtp_messages_accepted_total[5m])",
+          "legendFormat": "Accepted/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "showPoints": "never" },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "title": "Queue Depth by Spool",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "srmta_queue_depth{spool='incoming'}", "legendFormat": "Incoming" },
+        { "expr": "srmta_queue_depth{spool='active'}", "legendFormat": "Active" },
+        { "expr": "srmta_queue_depth{spool='deferred'}", "legendFormat": "Deferred" },
+        { "expr": "srmta_queue_depth{spool='retry'}", "legendFormat": "Retry" },
+        { "expr": "srmta_queue_depth{spool='dead-letter'}", "legendFormat": "Dead Letter" },
+        { "expr": "srmta_queue_depth{spool='failed'}", "legendFormat": "Failed" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "stacking": { "mode": "normal" } }
+        }
+      }
+    },
+    {
+      "title": "Active SMTP Connections",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "srmta_smtp_connections_active", "legendFormat": "Active" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 500 },
+              { "color": "red", "value": 900 }
+            ]
+          },
+          "max": 1000
+        }
+      }
+    },
+    {
+      "title": "Delivery Success Ratio",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(srmta_delivery_success_total[1h]) / (rate(srmta_delivery_success_total[1h]) + rate(srmta_delivery_errors_total[1h]))",
+          "legendFormat": "Success %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9 },
+              { "color": "green", "value": 0.95 }
+            ]
+          },
+          "max": 1
+        }
+      }
+    },
+    {
+      "title": "TLS Connection Rate",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "srmta_tls_connections_total / srmta_smtp_connections_total",
+          "legendFormat": "TLS Rate"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "title": "Auth Success Rate",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "targets": [
+        {
+          "expr": "srmta_auth_success_total / (srmta_auth_success_total + srmta_auth_failure_total)",
+          "legendFormat": "Auth Rate"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "title": "IP Health Scores",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        { "expr": "srmta_ip_health_score", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true } } }
+      ]
+    },
+    {
+      "title": "Bounce Rate by Type",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "expr": "srmta_bounce_total", "legendFormat": "{{type}}" }
+      ]
+    },
+    {
+      "title": "Processing Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(srmta_smtp_processing_latency_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(srmta_smtp_processing_latency_seconds_bucket[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(srmta_smtp_processing_latency_seconds_bucket[5m]))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Errors by Classification",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "targets": [
+        { "expr": "rate(srmta_delivery_errors_total{status='deferred'}[5m])", "legendFormat": "Deferred" },
+        { "expr": "rate(srmta_delivery_errors_total{status='bounced'}[5m])", "legendFormat": "Bounced" },
+        { "expr": "rate(srmta_delivery_errors_total{status='fail'}[5m])", "legendFormat": "Failed" },
+        { "expr": "rate(srmta_delivery_errors_total{status='dead-letter'}[5m])", "legendFormat": "Dead Letter" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "title": "SMTP Commands/sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "targets": [
+        { "expr": "rate(srmta_smtp_commands_total{command='EHLO'}[5m])", "legendFormat": "EHLO" },
+        { "expr": "rate(srmta_smtp_commands_total{command='MAIL'}[5m])", "legendFormat": "MAIL" },
+        { "expr": "rate(srmta_smtp_commands_total{command='RCPT'}[5m])", "legendFormat": "RCPT" },
+        { "expr": "rate(srmta_smtp_commands_total{command='DATA'}[5m])", "legendFormat": "DATA" },
+        { "expr": "rate(srmta_smtp_commands_total{command='QUIT'}[5m])", "legendFormat": "QUIT" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 5 },
+          "unit": "ops"
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["srmta", "email", "mta"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SRMTA — Mail Transfer Platform",
+  "uid": "srmta-main",
+  "version": 1
+}
