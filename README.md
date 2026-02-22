@@ -6,12 +6,15 @@ Production-grade, RFC 5321/5322 compliant MTA built in Go. Designed for high-vol
 
 | Category | Capabilities |
 |---|---|
-| **SMTP Engine** | ESMTP, STARTTLS (TLS 1.2+), AUTH (PLAIN/LOGIN), pipelining (RFC 2920), DSN |
+| **SMTP Engine** | ESMTP, STARTTLS (TLS 1.2+), AUTH (PLAIN/LOGIN), pipelining (RFC 2920), DSN, separate inbound (:25) and submission (:587) ports |
 | **Queue** | 6 spools (incoming→active→deferred→retry→dead-letter→failed), domain bucketing, sharding, crash-safe WAL journal |
 | **DNS** | Async resolver with in-memory + Redis caching, MX priority, A/AAAA fallback, resolver pool |
 | **IP Pool** | Health scoring (4xx/5xx/timeout/TLS), auto-disable/recovery, warm-up schedules |
+| **Smart Throttle** | Per-provider speed limits (Microsoft, Google, Yahoo, Apple, Zoho, Comcast), adaptive backoff on 4xx, rolling rate windows |
+| **MX-Based Routing** | Provider→dedicated IP segregation (Google, Outlook, Yahoo, Zoho get separate IPs), primary→backup→fallback chains |
 | **DKIM** | Multi-key signing, relaxed canonicalization, per-domain key selection |
 | **Bounce** | Hard/soft/block/policy/mailbox classification, auto-suppression, sender auto-pause |
+| **Access Control** | INI-based `allowed_ips.ini` (`[ipv4]`/`[ipv6]`/`[relay]`) and `allowed_domains.ini` (`[domains]`), wildcard domains |
 | **Compliance** | FBL webhook ingestion, List-Unsubscribe (RFC 2369 + RFC 8058), DMARC alignment |
 | **Observability** | Prometheus metrics, structured JSON logging, Grafana dashboard, CSV export |
 | **Admin API** | Node.js Fastify REST API with JWT, RBAC, rate limiting, WebSocket live updates |
@@ -30,40 +33,24 @@ Production-grade, RFC 5321/5322 compliant MTA built in Go. Designed for high-vol
 ### Build from Source
 
 ```bash
-# Clone
 git clone https://github.com/srmta/srmta.git
 cd srmta
-
-# Build
 make build
-
-# Run tests
 make test
-
-# Install locally (requires root)
 sudo make install
 ```
 
 ### Install from RPM (RHEL/CentOS/Fedora/Rocky)
 
 ```bash
-# Build RPM
 make rpm
-
-# Install
 sudo rpm -ivh rpmbuild/RPMS/x86_64/srmta-1.0.0-1.el9.x86_64.rpm
-
-# Or from repo (if published):
-# sudo dnf install srmta
 ```
 
 ### Install from DEB (Debian/Ubuntu)
 
 ```bash
-# Build DEB
 make deb
-
-# Install
 sudo dpkg -i debbuild/srmta_1.0.0-1_amd64.deb
 sudo apt-get install -f  # resolve dependencies
 ```
@@ -76,28 +63,34 @@ sudo vim /etc/srmta/config.yaml
 sudo vim /etc/srmta/srmta.env          # database credentials
 
 # 2. Edit sub-configs as needed
-sudo vim /etc/srmta/config.d/10-smtp.yaml
-sudo vim /etc/srmta/config.d/20-dkim.yaml
-sudo vim /etc/srmta/config.d/30-ips.yaml
-sudo vim /etc/srmta/config.d/40-database.yaml
-sudo vim /etc/srmta/config.d/50-queue.yaml
+sudo vim /etc/srmta/config.d/10-smtp.yaml       # SMTP ports & limits
+sudo vim /etc/srmta/config.d/20-dkim.yaml       # DKIM keys
+sudo vim /etc/srmta/config.d/30-ips.yaml        # IP pool
+sudo vim /etc/srmta/config.d/40-database.yaml   # DB credentials
+sudo vim /etc/srmta/config.d/50-queue.yaml      # Queue & retry policy
+sudo vim /etc/srmta/config.d/60-throttle.yaml   # Per-provider speed limits
+sudo vim /etc/srmta/config.d/70-routing.yaml    # MX-based IP routing
 
-# 3. Initialize database
+# 3. Edit access control INI files
+sudo vim /etc/srmta/allowed_domains.ini
+sudo vim /etc/srmta/allowed_ips.ini
+
+# 4. Initialize database
 sudo -u postgres createuser srmta
 sudo -u postgres createdb -O srmta srmta
 psql -U srmta -d srmta -f /usr/share/srmta/migrations/001_init.sql
 
-# 4. Generate DKIM keys
+# 5. Generate DKIM keys
 openssl genrsa -out /etc/srmta/dkim/example.com.key 2048
 openssl rsa -in /etc/srmta/dkim/example.com.key -pubout | \
   grep -v "^---" | tr -d '\n'
 # → Add resulting public key as TXT record: default._domainkey.example.com
 
-# 5. Start services
+# 6. Start services
 sudo systemctl enable --now srmta.socket
 sudo systemctl enable --now srmta.service
 
-# 6. Verify
+# 7. Verify
 sudo systemctl status srmta
 curl http://localhost:9090/metrics
 ```
@@ -108,11 +101,15 @@ curl http://localhost:9090/metrics
 /etc/srmta/
 ├── config.yaml            # Main configuration
 ├── config.d/              # Sub-configs (loaded alphabetically, merged)
-│   ├── 10-smtp.yaml       # SMTP engine settings
+│   ├── 10-smtp.yaml       # Inbound/outbound ports, SMTP limits
 │   ├── 20-dkim.yaml       # DKIM keys
 │   ├── 30-ips.yaml        # IP pool configuration
 │   ├── 40-database.yaml   # Database credentials
-│   └── 50-queue.yaml      # Queue & retry policy
+│   ├── 50-queue.yaml      # Queue & retry policy
+│   ├── 60-throttle.yaml   # Per-provider speed management
+│   └── 70-routing.yaml    # MX-based IP routing
+├── allowed_domains.ini    # Authorized sending domains [domains]
+├── allowed_ips.ini        # Authorized relay IPs [ipv4]/[ipv6]/[relay]
 ├── dkim/                  # DKIM private keys
 │   └── example.com.key
 └── srmta.env              # Secrets (env vars for systemd)
@@ -129,32 +126,79 @@ SRMTA uses a **layered configuration** system:
 
 1. **Main config** (`/etc/srmta/config.yaml`) — base settings
 2. **Sub-configs** (`/etc/srmta/config.d/*.yaml`) — merged on top, sorted alphabetically
-3. **Environment variables** — expanded via `${VAR}` syntax in any YAML file
+3. **INI files** (`allowed_domains.ini`, `allowed_ips.ini`) — access control lists
+4. **Environment variables** — expanded via `${VAR}` syntax in any YAML file
 
-### Config Merge Rules
-
-- Scalar values: sub-config overrides main config
-- Slices: sub-config replaces the entire slice
-- DKIM keys: sub-config keys are **appended** (additive)
-- Use numeric prefixes (`10-`, `20-`) to control merge order
-
-### Example: Override SMTP settings only
+### SMTP Ports
 
 ```yaml
-# /etc/srmta/config.d/10-smtp.yaml
+# config.d/10-smtp.yaml
 smtp:
-  max_connections: 5000
-  require_tls: true
+  inbound_addr: ":25"       # Port for receiving mail (MX traffic)
+  submission_addr: ":587"   # Port for authenticated client submission (MSA)
+  outbound_port: 25         # Remote port for outbound delivery
 ```
+
+### Access Control (INI files)
+
+```ini
+# /etc/srmta/allowed_domains.ini
+[domains]
+example.com
+.example.com        ; wildcard — all subdomains
+
+# /etc/srmta/allowed_ips.ini
+[ipv4]
+203.0.113.10
+10.0.0.0/8          ; CIDR range
+
+[ipv6]
+2001:db8::1
+2001:db8::/32
+
+[relay]
+# Trusted relay partners
+```
+
+### Smart Speed Management
+
+Per-provider throttle rules in `config.d/60-throttle.yaml` prevent blacklisting by respecting each provider's acceptance thresholds:
+
+| Provider | Max Conn | Per Second | Per Minute | Per Hour | Backoff |
+|---|---|---|---|---|---|
+| Microsoft/Outlook | 5 | 3 | 100 | 2,000 | 3x, max 10m |
+| Google/Gmail | 10 | 10 | 300 | 5,000 | 2.5x, max 8m |
+| Yahoo/AOL | 5 | 5 | 150 | 3,000 | 2x, max 10m |
+| Apple/iCloud | 3 | 2 | 60 | 1,000 | 3x, max 15m |
+| Zoho | 5 | 5 | 150 | 3,000 | 2.5x, max 10m |
+| Comcast/Xfinity | 3 | 2 | 50 | 800 | 3x, max 15m |
+| Default (others) | 10 | 20 | 500 | 10,000 | 2x, max 5m |
+
+Rates automatically reduce on 4xx throttle responses and recover on success.
+
+### MX-Based IP Routing
+
+`config.d/70-routing.yaml` segregates sending IPs per provider to isolate reputation:
+
+```
+Recipient MX lookup
+    │
+    ├── *.google.com         → IPs: 203.0.113.10, .11  (backup: .20)
+    ├── *.outlook.com        → IPs: 203.0.113.12, .13  (backup: .21)
+    ├── *.yahoodns.net       → IPs: 203.0.113.14       (backup: .22)
+    ├── *.mail.icloud.com    → IPs: 203.0.113.15       (backup: .23)
+    ├── *.zoho.com           → IPs: 203.0.113.19       (backup: .24)
+    └── * (self-hosted/other)→ IPs: 203.0.113.16-.18   (fallback: .50-.51)
+```
+
+Self-hosted IMAP servers and unbranded mail servers fall through to the "other" pool.
 
 ## Admin API
 
 The Node.js Fastify API runs separately:
 
 ```bash
-cd api
-npm install
-npm start
+cd api && npm install && npm start
 # Listens on :3000 by default
 ```
 
@@ -164,16 +208,13 @@ OpenAPI spec: `api/openapi.yaml`
 
 ## Dashboard
 
-Open `dashboard/index.html` in a browser, or serve via nginx/caddy. It connects to the Admin API on `localhost:3000` by default.
+Open `dashboard/index.html` in a browser, or serve via nginx/caddy. Connects to the Admin API on `localhost:3000`.
 
 ## Monitoring
 
 ### Prometheus
 
-Scrape the metrics endpoint:
-
 ```yaml
-# prometheus.yml
 scrape_configs:
   - job_name: srmta
     static_configs:
@@ -182,22 +223,24 @@ scrape_configs:
 
 ### Grafana
 
-Import `grafana/dashboard.json` for 12 pre-built panels covering delivery rate, queue depth, connections, success ratio, IP health, bounces, and latency.
+Import `grafana/dashboard.json` — 12 pre-built panels for delivery rate, queue depth, connections, success ratio, IP health, bounces, and latency.
 
 ## Architecture
 
 ```
-┌──────────────┐    ┌────────────┐    ┌───────────────┐
-│  Inbound     │───▶│   Queue    │───▶│   Delivery    │
-│  SMTP Server │    │  Manager   │    │   Engine      │
-│  :25 / :587  │    │  (6 spools)│    │  (worker pool)│
-└──────────────┘    └────────────┘    └───────┬───────┘
-                                              │
-                    ┌─────────────────────────┼──────────────┐
+┌──────────────┐    ┌────────────┐    ┌───────────────┐    ┌──────────────┐
+│  Inbound     │───▶│   Queue    │───▶│   Throttle    │───▶│   Delivery   │
+│  SMTP :25    │    │  Manager   │    │   Manager     │    │   Engine     │
+│  MSA  :587   │    │  (6 spools)│    │  (per-provider│    │  (worker pool│
+└──────────────┘    └────────────┘    │   speed ctrl) │    └──────┬───────┘
+                                      └───────────────┘           │
+                    ┌─────────────────────────┬──────────────┬─────┘
                     │                         │              │
               ┌─────▼─────┐  ┌──────────┐  ┌─▼────────┐  ┌─▼──────────┐
-              │ DNS        │  │ IP Pool  │  │ DKIM     │  │ Bounce     │
-              │ Resolver   │  │ (health) │  │ Signer   │  │ Classifier │
+              │ DNS        │  │ MX-Based │  │ DKIM     │  │ Bounce     │
+              │ Resolver   │  │ IP Router│  │ Signer   │  │ Classifier │
+              │            │  │ (per-MX  │  │          │  │            │
+              │            │  │  IP pool)│  │          │  │            │
               └────────────┘  └──────────┘  └──────────┘  └────────────┘
 ```
 
