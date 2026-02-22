@@ -1,9 +1,19 @@
 // Package config provides YAML-based configuration loading for the SRMTA mail transfer platform.
+// Supports a centralized config file with optional sub-configs in config.d/*.yaml.
+//
+// Loading order:
+//  1. Main config file (e.g. /etc/srmta/config.yaml)
+//  2. All *.yaml files in config.d/ directory (sorted alphabetically)
+//
+// Sub-configs are deep-merged on top of the main config, allowing operators to
+// split concerns (SMTP settings, DKIM keys, IP pool, etc.) into separate files.
 package config
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +35,7 @@ type Config struct {
 	Redis     RedisConfig     `yaml:"redis"`
 	TLS       TLSConfig       `yaml:"tls"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	ConfigDir string          `yaml:"config_dir"` // Path to config.d/ directory (default: config.d/ relative to main config)
 }
 
 // ServerConfig holds general server settings.
@@ -90,7 +101,7 @@ type DNSConfig struct {
 
 // IPPoolConfig holds IP pool and health scoring settings.
 type IPPoolConfig struct {
-	IPs              []IPConfig `yaml:"ips"`
+	IPs              []IPConfig    `yaml:"ips"`
 	HealthWindow     time.Duration `yaml:"health_window"`
 	DisableThreshold float64       `yaml:"disable_threshold"`
 	RecoveryTime     time.Duration `yaml:"recovery_time"`
@@ -108,9 +119,9 @@ type IPConfig struct {
 
 // DKIMConfig holds DKIM signing settings.
 type DKIMConfig struct {
-	Enabled    bool         `yaml:"enabled"`
-	Keys       []DKIMKey    `yaml:"keys"`
-	DefaultKey string       `yaml:"default_key"`
+	Enabled    bool      `yaml:"enabled"`
+	Keys       []DKIMKey `yaml:"keys"`
+	DefaultKey string    `yaml:"default_key"`
 }
 
 // DKIMKey defines a DKIM signing key.
@@ -132,14 +143,14 @@ type BounceConfig struct {
 
 // LoggingConfig holds logging settings.
 type LoggingConfig struct {
-	Level       string `yaml:"level"` // debug, info, warn, error
-	Format      string `yaml:"format"` // json, text
-	Output      string `yaml:"output"` // stdout, file
-	FilePath    string `yaml:"file_path"`
-	MaxSizeMB   int    `yaml:"max_size_mb"`
-	MaxBackups  int    `yaml:"max_backups"`
-	MaxAgeDays  int    `yaml:"max_age_days"`
-	Compress    bool   `yaml:"compress"`
+	Level      string `yaml:"level"`  // debug, info, warn, error
+	Format     string `yaml:"format"` // json, text
+	Output     string `yaml:"output"` // stdout, file
+	FilePath   string `yaml:"file_path"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxBackups int    `yaml:"max_backups"`
+	MaxAgeDays int    `yaml:"max_age_days"`
+	Compress   bool   `yaml:"compress"`
 }
 
 // MetricsConfig holds Prometheus metrics settings.
@@ -179,19 +190,61 @@ type TLSConfig struct {
 
 // RateLimitConfig holds rate limiting settings.
 type RateLimitConfig struct {
-	GlobalRate    int `yaml:"global_rate"`    // emails/sec
+	GlobalRate    int `yaml:"global_rate"`     // emails/sec
 	PerDomainRate int `yaml:"per_domain_rate"` // emails/sec per domain
 	PerSenderRate int `yaml:"per_sender_rate"` // emails/sec per sender
 }
 
-// Load reads and parses a YAML configuration file.
+// Load reads the main YAML configuration file and merges any sub-configs
+// found in the config.d/ directory. Sub-configs are loaded in alphabetical
+// order and deep-merged on top of the main config, so later files override
+// earlier ones for scalar values, and extend slices/maps.
+//
+// The config.d directory is resolved as follows:
+//  1. If config_dir is set in the main config, use that path
+//  2. Otherwise, look for a config.d/ directory next to the main config file
+//
+// Each sub-config file can contain any subset of the full Config schema.
+// Example layout:
+//
+//	/etc/srmta/config.yaml           ← main config (server, smtp, queue, etc.)
+//	/etc/srmta/config.d/10-smtp.yaml ← SMTP overrides
+//	/etc/srmta/config.d/20-dkim.yaml ← DKIM key config
+//	/etc/srmta/config.d/30-ips.yaml  ← IP pool config
+//	/etc/srmta/config.d/40-db.yaml   ← Database credentials
 func Load(path string) (*Config, error) {
+	// ── Step 1: Load the main config file ────────────────────────────
+	cfg, err := loadSingleFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("main config: %w", err)
+	}
+
+	// ── Step 2: Resolve config.d directory ───────────────────────────
+	configDir := cfg.ConfigDir
+	if configDir == "" {
+		// Default: config.d/ next to the main config file
+		configDir = filepath.Join(filepath.Dir(path), "config.d")
+	}
+
+	// ── Step 3: Load and merge sub-configs ───────────────────────────
+	if err := mergeConfigDir(cfg, configDir); err != nil {
+		// config.d not existing is not an error — it's optional
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("config.d merge: %w", err)
+		}
+	}
+
+	applyDefaults(cfg)
+	return cfg, nil
+}
+
+// loadSingleFile reads, env-expands, and unmarshals a single YAML file.
+func loadSingleFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
-	// Expand environment variables in config
 	expanded := os.ExpandEnv(string(data))
 
 	cfg := &Config{}
@@ -199,8 +252,325 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 
-	applyDefaults(cfg)
 	return cfg, nil
+}
+
+// mergeConfigDir loads all *.yaml and *.yml files from dir (sorted)
+// and deep-merges each one on top of the provided config.
+func mergeConfigDir(cfg *Config, dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+
+	// Glob both .yaml and .yml extensions
+	var files []string
+	for _, ext := range []string{"*.yaml", "*.yml"} {
+		matches, err := filepath.Glob(filepath.Join(dir, ext))
+		if err != nil {
+			return fmt.Errorf("glob %s/%s: %w", dir, ext, err)
+		}
+		files = append(files, matches...)
+	}
+
+	// Sort alphabetically for deterministic merge order
+	// Use numeric prefixes (10-smtp.yaml, 20-dkim.yaml) to control order
+	sort.Strings(files)
+
+	for _, file := range files {
+		override, err := loadSingleFile(file)
+		if err != nil {
+			return fmt.Errorf("sub-config %s: %w", filepath.Base(file), err)
+		}
+		mergeConfig(cfg, override)
+	}
+
+	return nil
+}
+
+// mergeConfig deep-merges src into dst. Non-zero values in src override dst.
+// For slices, src replaces dst entirely (if non-empty). For structs, each
+// field is merged independently so partial overrides work.
+func mergeConfig(dst, src *Config) {
+	// Server
+	if src.Server.Hostname != "" {
+		dst.Server.Hostname = src.Server.Hostname
+	}
+	if src.Server.ListenAddr != "" {
+		dst.Server.ListenAddr = src.Server.ListenAddr
+	}
+	if src.Server.MaxWorkers != 0 {
+		dst.Server.MaxWorkers = src.Server.MaxWorkers
+	}
+	if src.Server.ShutdownGrace != 0 {
+		dst.Server.ShutdownGrace = src.Server.ShutdownGrace
+	}
+
+	// SMTP
+	if src.SMTP.ListenAddr != "" {
+		dst.SMTP.ListenAddr = src.SMTP.ListenAddr
+	}
+	if src.SMTP.MaxConnections != 0 {
+		dst.SMTP.MaxConnections = src.SMTP.MaxConnections
+	}
+	if src.SMTP.MaxMessageSize != 0 {
+		dst.SMTP.MaxMessageSize = src.SMTP.MaxMessageSize
+	}
+	if src.SMTP.ReadTimeout != 0 {
+		dst.SMTP.ReadTimeout = src.SMTP.ReadTimeout
+	}
+	if src.SMTP.WriteTimeout != 0 {
+		dst.SMTP.WriteTimeout = src.SMTP.WriteTimeout
+	}
+	if src.SMTP.MaxRecipients != 0 {
+		dst.SMTP.MaxRecipients = src.SMTP.MaxRecipients
+	}
+	if src.SMTP.RequireAuth {
+		dst.SMTP.RequireAuth = true
+	}
+	if src.SMTP.RequireTLS {
+		dst.SMTP.RequireTLS = true
+	}
+	if src.SMTP.BannerHostname != "" {
+		dst.SMTP.BannerHostname = src.SMTP.BannerHostname
+	}
+	if len(src.SMTP.AllowedDomains) > 0 {
+		dst.SMTP.AllowedDomains = src.SMTP.AllowedDomains
+	}
+	if src.SMTP.EnablePipelining {
+		dst.SMTP.EnablePipelining = true
+	}
+
+	// Queue
+	if src.Queue.SpoolDir != "" {
+		dst.Queue.SpoolDir = src.Queue.SpoolDir
+	}
+	if src.Queue.MaxQueueDepth != 0 {
+		dst.Queue.MaxQueueDepth = src.Queue.MaxQueueDepth
+	}
+	if src.Queue.MaxRetries != 0 {
+		dst.Queue.MaxRetries = src.Queue.MaxRetries
+	}
+	if len(src.Queue.RetryIntervals) > 0 {
+		dst.Queue.RetryIntervals = src.Queue.RetryIntervals
+	}
+	if src.Queue.DeadLetterAfter != 0 {
+		dst.Queue.DeadLetterAfter = src.Queue.DeadLetterAfter
+	}
+	if src.Queue.JournalEnabled {
+		dst.Queue.JournalEnabled = true
+	}
+	if src.Queue.ShardCount != 0 {
+		dst.Queue.ShardCount = src.Queue.ShardCount
+	}
+	if src.Queue.DomainBuckets != 0 {
+		dst.Queue.DomainBuckets = src.Queue.DomainBuckets
+	}
+	if src.Queue.ProcessingWorkers != 0 {
+		dst.Queue.ProcessingWorkers = src.Queue.ProcessingWorkers
+	}
+
+	// Delivery
+	if src.Delivery.MaxConcurrent != 0 {
+		dst.Delivery.MaxConcurrent = src.Delivery.MaxConcurrent
+	}
+	if src.Delivery.PerDomainConcurrency != 0 {
+		dst.Delivery.PerDomainConcurrency = src.Delivery.PerDomainConcurrency
+	}
+	if src.Delivery.ConnectionTimeout != 0 {
+		dst.Delivery.ConnectionTimeout = src.Delivery.ConnectionTimeout
+	}
+	if src.Delivery.DialTimeout != 0 {
+		dst.Delivery.DialTimeout = src.Delivery.DialTimeout
+	}
+	if src.Delivery.EHLOTimeout != 0 {
+		dst.Delivery.EHLOTimeout = src.Delivery.EHLOTimeout
+	}
+	if src.Delivery.MailTimeout != 0 {
+		dst.Delivery.MailTimeout = src.Delivery.MailTimeout
+	}
+	if src.Delivery.RcptTimeout != 0 {
+		dst.Delivery.RcptTimeout = src.Delivery.RcptTimeout
+	}
+	if src.Delivery.DataTimeout != 0 {
+		dst.Delivery.DataTimeout = src.Delivery.DataTimeout
+	}
+	if src.Delivery.PoolSize != 0 {
+		dst.Delivery.PoolSize = src.Delivery.PoolSize
+	}
+	if src.Delivery.PoolIdleTimeout != 0 {
+		dst.Delivery.PoolIdleTimeout = src.Delivery.PoolIdleTimeout
+	}
+
+	// DNS
+	if len(src.DNS.Servers) > 0 {
+		dst.DNS.Servers = src.DNS.Servers
+	}
+	if src.DNS.CacheTTL != 0 {
+		dst.DNS.CacheTTL = src.DNS.CacheTTL
+	}
+	if src.DNS.CacheSize != 0 {
+		dst.DNS.CacheSize = src.DNS.CacheSize
+	}
+	if src.DNS.Timeout != 0 {
+		dst.DNS.Timeout = src.DNS.Timeout
+	}
+	if src.DNS.PoolSize != 0 {
+		dst.DNS.PoolSize = src.DNS.PoolSize
+	}
+	if src.DNS.UseRedisCache {
+		dst.DNS.UseRedisCache = true
+	}
+	if src.DNS.EnableDNSSEC {
+		dst.DNS.EnableDNSSEC = true
+	}
+
+	// IP Pool
+	if len(src.IPPool.IPs) > 0 {
+		dst.IPPool.IPs = src.IPPool.IPs
+	}
+	if src.IPPool.HealthWindow != 0 {
+		dst.IPPool.HealthWindow = src.IPPool.HealthWindow
+	}
+	if src.IPPool.DisableThreshold != 0 {
+		dst.IPPool.DisableThreshold = src.IPPool.DisableThreshold
+	}
+	if src.IPPool.RecoveryTime != 0 {
+		dst.IPPool.RecoveryTime = src.IPPool.RecoveryTime
+	}
+
+	// DKIM
+	if src.DKIM.Enabled {
+		dst.DKIM.Enabled = true
+	}
+	if len(src.DKIM.Keys) > 0 {
+		dst.DKIM.Keys = append(dst.DKIM.Keys, src.DKIM.Keys...)
+	}
+	if src.DKIM.DefaultKey != "" {
+		dst.DKIM.DefaultKey = src.DKIM.DefaultKey
+	}
+
+	// Bounce
+	if src.Bounce.HardBounceThreshold != 0 {
+		dst.Bounce.HardBounceThreshold = src.Bounce.HardBounceThreshold
+	}
+	if src.Bounce.SoftBounceThreshold != 0 {
+		dst.Bounce.SoftBounceThreshold = src.Bounce.SoftBounceThreshold
+	}
+	if src.Bounce.ComplaintThreshold != 0 {
+		dst.Bounce.ComplaintThreshold = src.Bounce.ComplaintThreshold
+	}
+	if src.Bounce.SenderPauseEnabled {
+		dst.Bounce.SenderPauseEnabled = true
+	}
+	if src.Bounce.SuppressionListEnabled {
+		dst.Bounce.SuppressionListEnabled = true
+	}
+
+	// Logging
+	if src.Logging.Level != "" {
+		dst.Logging.Level = src.Logging.Level
+	}
+	if src.Logging.Format != "" {
+		dst.Logging.Format = src.Logging.Format
+	}
+	if src.Logging.Output != "" {
+		dst.Logging.Output = src.Logging.Output
+	}
+	if src.Logging.FilePath != "" {
+		dst.Logging.FilePath = src.Logging.FilePath
+	}
+	if src.Logging.MaxSizeMB != 0 {
+		dst.Logging.MaxSizeMB = src.Logging.MaxSizeMB
+	}
+	if src.Logging.MaxBackups != 0 {
+		dst.Logging.MaxBackups = src.Logging.MaxBackups
+	}
+	if src.Logging.MaxAgeDays != 0 {
+		dst.Logging.MaxAgeDays = src.Logging.MaxAgeDays
+	}
+	if src.Logging.Compress {
+		dst.Logging.Compress = true
+	}
+
+	// Metrics
+	if src.Metrics.Enabled {
+		dst.Metrics.Enabled = true
+	}
+	if src.Metrics.ListenAddr != "" {
+		dst.Metrics.ListenAddr = src.Metrics.ListenAddr
+	}
+	if src.Metrics.Path != "" {
+		dst.Metrics.Path = src.Metrics.Path
+	}
+
+	// Database
+	if src.Database.Host != "" {
+		dst.Database.Host = src.Database.Host
+	}
+	if src.Database.Port != 0 {
+		dst.Database.Port = src.Database.Port
+	}
+	if src.Database.User != "" {
+		dst.Database.User = src.Database.User
+	}
+	if src.Database.Password != "" {
+		dst.Database.Password = src.Database.Password
+	}
+	if src.Database.DBName != "" {
+		dst.Database.DBName = src.Database.DBName
+	}
+	if src.Database.SSLMode != "" {
+		dst.Database.SSLMode = src.Database.SSLMode
+	}
+	if src.Database.MaxOpenConns != 0 {
+		dst.Database.MaxOpenConns = src.Database.MaxOpenConns
+	}
+	if src.Database.MaxIdleConns != 0 {
+		dst.Database.MaxIdleConns = src.Database.MaxIdleConns
+	}
+
+	// Redis
+	if src.Redis.Addr != "" {
+		dst.Redis.Addr = src.Redis.Addr
+	}
+	if src.Redis.Password != "" {
+		dst.Redis.Password = src.Redis.Password
+	}
+	if src.Redis.DB != 0 {
+		dst.Redis.DB = src.Redis.DB
+	}
+	if src.Redis.PoolSize != 0 {
+		dst.Redis.PoolSize = src.Redis.PoolSize
+	}
+
+	// TLS
+	if src.TLS.CertFile != "" {
+		dst.TLS.CertFile = src.TLS.CertFile
+	}
+	if src.TLS.KeyFile != "" {
+		dst.TLS.KeyFile = src.TLS.KeyFile
+	}
+	if src.TLS.CAFile != "" {
+		dst.TLS.CAFile = src.TLS.CAFile
+	}
+	if src.TLS.MinVersion != "" {
+		dst.TLS.MinVersion = src.TLS.MinVersion
+	}
+
+	// Rate Limit
+	if src.RateLimit.GlobalRate != 0 {
+		dst.RateLimit.GlobalRate = src.RateLimit.GlobalRate
+	}
+	if src.RateLimit.PerDomainRate != 0 {
+		dst.RateLimit.PerDomainRate = src.RateLimit.PerDomainRate
+	}
+	if src.RateLimit.PerSenderRate != 0 {
+		dst.RateLimit.PerSenderRate = src.RateLimit.PerSenderRate
+	}
 }
 
 // applyDefaults sets sensible defaults for unset configuration values.

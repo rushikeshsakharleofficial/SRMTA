@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRMTA — Mail Transfer Platform Dashboard</title>
+  <meta name="description" content="SRMTA Admin Dashboard — Monitor and manage your mail transfer platform">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #111827;
+      --bg-card: #1a2035;
+      --bg-card-hover: #1e2642;
+      --border: #2a3550;
+      --text-primary: #e8ecf4;
+      --text-secondary: #8892a8;
+      --text-muted: #5a6478;
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-green: #10b981;
+      --accent-red: #ef4444;
+      --accent-orange: #f59e0b;
+      --accent-cyan: #06b6d4;
+      --gradient-primary: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --gradient-success: linear-gradient(135deg, #10b981, #06b6d4);
+      --gradient-danger: linear-gradient(135deg, #ef4444, #f59e0b);
+      --shadow: 0 8px 32px rgba(0,0,0,0.3);
+      --radius: 12px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ────────────────────────────────────────────────────── */
+    .sidebar {
+      position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      padding: 24px 16px;
+      display: flex; flex-direction: column;
+      z-index: 100;
+    }
+    .logo {
+      font-size: 24px; font-weight: 700;
+      background: var(--gradient-primary);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      margin-bottom: 8px; letter-spacing: -0.5px;
+    }
+    .logo-sub { font-size: 11px; color: var(--text-muted); margin-bottom: 32px; letter-spacing: 1px; text-transform: uppercase; }
+    .nav-section { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 20px 0 8px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; border-radius: 8px; cursor: pointer;
+      color: var(--text-secondary); font-size: 14px; font-weight: 400;
+      transition: all 0.2s; margin-bottom: 2px;
+    }
+    .nav-item:hover { background: rgba(59,130,246,0.1); color: var(--text-primary); }
+    .nav-item.active { background: rgba(59,130,246,0.15); color: var(--accent-blue); font-weight: 500; }
+    .nav-icon { width: 20px; text-align: center; font-size: 16px; }
+    .nav-badge {
+      margin-left: auto; background: var(--accent-red); color: white;
+      font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 600;
+    }
+    .sidebar-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); display: inline-block; margin-right: 8px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    /* ── Main Content ───────────────────────────────────────────────── */
+    .main { margin-left: 260px; padding: 24px 32px; }
+    .header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 28px;
+    }
+    .header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; }
+    .header-actions { display: flex; gap: 12px; align-items: center; }
+    .btn {
+      padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer;
+      font-family: inherit; font-size: 13px; font-weight: 500; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--gradient-primary); color: white; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.4); }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+    .btn-outline:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+    .time-indicator { font-size: 12px; color: var(--text-muted); }
+
+    /* ── Stats Cards ────────────────────────────────────────────────── */
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(6, 1fr);
+      gap: 16px; margin-bottom: 28px;
+    }
+    .stat-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+      transition: all 0.3s;
+    }
+    .stat-card:hover { transform: translateY(-2px); border-color: rgba(59,130,246,0.3); box-shadow: var(--shadow); }
+    .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .stat-value {
+      font-size: 28px; font-weight: 700; letter-spacing: -1px;
+      background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .stat-change { font-size: 12px; margin-top: 6px; }
+    .stat-up { color: var(--accent-green); }
+    .stat-down { color: var(--accent-red); }
+
+    /* ── Charts ──────────────────────────────────────────────────────── */
+    .charts-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 28px; }
+    .chart-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px;
+    }
+    .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .chart-title { font-size: 16px; font-weight: 600; }
+    .chart-tabs { display: flex; gap: 4px; }
+    .chart-tab { padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--text-muted); }
+    .chart-tab.active { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+    .chart-area { height: 240px; display: flex; align-items: flex-end; gap: 4px; padding: 0 8px; }
+    .chart-bar {
+      flex: 1; border-radius: 4px 4px 0 0; min-height: 4px;
+      position: relative; transition: all 0.5s cubic-bezier(0.4,0,0.2,1);
+    }
+    .chart-bar:hover { opacity: 0.8; transform: scaleY(1.02); transform-origin: bottom; }
+    .chart-bar-tooltip {
+      display: none; position: absolute; bottom: 100%; left: 50%;
+      transform: translateX(-50%); background: var(--bg-secondary);
+      border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px;
+      font-size: 11px; white-space: nowrap; z-index: 10;
+    }
+    .chart-bar:hover .chart-bar-tooltip { display: block; }
+
+    /* ── Queue Spools ───────────────────────────────────────────────── */
+    .spool-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 16px; }
+    .spool-item {
+      text-align: center; padding: 14px; background: rgba(0,0,0,0.2);
+      border-radius: 8px; border: 1px solid var(--border);
+    }
+    .spool-name { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .spool-count { font-size: 20px; font-weight: 700; }
+    .spool-incoming .spool-count { color: var(--accent-cyan); }
+    .spool-active .spool-count { color: var(--accent-blue); }
+    .spool-deferred .spool-count { color: var(--accent-orange); }
+    .spool-retry .spool-count { color: var(--accent-purple); }
+    .spool-dead .spool-count { color: var(--accent-red); }
+    .spool-failed .spool-count { color: var(--text-muted); }
+
+    /* ── IP Health Table ─────────────────────────────────────────────── */
+    .table-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; margin-bottom: 28px;
+    }
+    .table-header { padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; }
+    .table-title { font-size: 16px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      padding: 12px 16px; text-align: left; font-size: 11px;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;
+      border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2);
+    }
+    td { padding: 14px 16px; font-size: 13px; border-bottom: 1px solid rgba(42,53,80,0.5); }
+    tr:hover td { background: rgba(59,130,246,0.03); }
+    .health-bar {
+      width: 60px; height: 6px; background: rgba(255,255,255,0.1);
+      border-radius: 3px; overflow: hidden;
+    }
+    .health-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    .badge {
+      display: inline-block; padding: 3px 10px; border-radius: 12px;
+      font-size: 11px; font-weight: 500;
+    }
+    .badge-healthy { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+    .badge-warming { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+    .badge-disabled { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+
+    /* ── Bottom Grid ─────────────────────────────────────────────────── */
+    .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .log-entry { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(42,53,80,0.3); font-size: 13px; }
+    .log-time { color: var(--text-muted); font-family: monospace; font-size: 12px; white-space: nowrap; }
+    .log-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+    .log-delivered { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+    .log-bounced { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+    .log-deferred { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+    .log-recipient { color: var(--text-secondary); flex: 1; }
+    .domain-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(42,53,80,0.3); }
+    .domain-name { font-size: 14px; font-weight: 500; }
+    .domain-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); }
+    .domain-bar { width: 100%; height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; margin-top: 6px; }
+    .domain-bar-fill { height: 100%; border-radius: 2px; background: var(--gradient-success); }
+    .scroll-container { max-height: 320px; overflow-y: auto; padding: 0 24px; }
+    .scroll-container::-webkit-scrollbar { width: 4px; }
+    .scroll-container::-webkit-scrollbar-track { background: transparent; }
+    .scroll-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="logo">SRMTA</div>
+    <div class="logo-sub">Mail Transfer Platform</div>
+
+    <div class="nav-section">Overview</div>
+    <div class="nav-item active"><span class="nav-icon">📊</span> Dashboard</div>
+    <div class="nav-item"><span class="nav-icon">📬</span> Queue <span class="nav-badge" id="nav-queue-badge">0</span></div>
+    <div class="nav-item"><span class="nav-icon">📈</span> Metrics</div>
+
+    <div class="nav-section">Management</div>
+    <div class="nav-item"><span class="nav-icon">🌐</span> IP Pool</div>
+    <div class="nav-item"><span class="nav-icon">🔑</span> DKIM Keys</div>
+    <div class="nav-item"><span class="nav-icon">🌍</span> Domains</div>
+    <div class="nav-item"><span class="nav-icon">🚫</span> Suppressions</div>
+
+    <div class="nav-section">System</div>
+    <div class="nav-item"><span class="nav-icon">📋</span> Logs</div>
+    <div class="nav-item"><span class="nav-icon">⚙️</span> Config</div>
+    <div class="nav-item"><span class="nav-icon">🔌</span> API Docs</div>
+
+    <div class="sidebar-footer">
+      <div style="font-size:12px; color:var(--text-muted);">
+        <span class="status-dot"></span> Engine Online
+      </div>
+      <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">v1.0.0 · Go 1.22</div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+    <div class="header">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="time-indicator" id="last-updated">Last updated: --</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-outline" onclick="exportCSV()">📥 Export CSV</button>
+        <button class="btn btn-primary" onclick="sendTestEmail()">✉️ Send Test</button>
+      </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Sent (24h)</div>
+        <div class="stat-value" id="stat-sent">0</div>
+        <div class="stat-change stat-up" id="stat-sent-change">↑ 12.4%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Delivered</div>
+        <div class="stat-value" id="stat-delivered">0</div>
+        <div class="stat-change stat-up">97.2% rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Bounced</div>
+        <div class="stat-value" id="stat-bounced">0</div>
+        <div class="stat-change stat-down">1.8% rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Deferred</div>
+        <div class="stat-value" id="stat-deferred">0</div>
+        <div class="stat-change">0.8% rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Queue Depth</div>
+        <div class="stat-value" id="stat-queue">0</div>
+        <div class="stat-change" id="stat-queue-rate">0 msg/s</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Latency</div>
+        <div class="stat-value" id="stat-latency">0<span style="font-size:14px">ms</span></div>
+        <div class="stat-change stat-up">↓ 5.2%</div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Delivery Volume</div>
+          <div class="chart-tabs">
+            <div class="chart-tab active">1h</div>
+            <div class="chart-tab">6h</div>
+            <div class="chart-tab">24h</div>
+            <div class="chart-tab">7d</div>
+          </div>
+        </div>
+        <div class="chart-area" id="delivery-chart"></div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Queue Spools</div>
+        </div>
+        <div class="spool-grid">
+          <div class="spool-item spool-incoming"><div class="spool-name">Incoming</div><div class="spool-count" id="spool-incoming">0</div></div>
+          <div class="spool-item spool-active"><div class="spool-name">Active</div><div class="spool-count" id="spool-active">0</div></div>
+          <div class="spool-item spool-deferred"><div class="spool-name">Deferred</div><div class="spool-count" id="spool-deferred">0</div></div>
+          <div class="spool-item spool-retry"><div class="spool-name">Retry</div><div class="spool-count" id="spool-retry">0</div></div>
+          <div class="spool-item spool-dead"><div class="spool-name">Dead Letter</div><div class="spool-count" id="spool-dead">0</div></div>
+          <div class="spool-item spool-failed"><div class="spool-name">Failed</div><div class="spool-count" id="spool-failed">0</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IP Health Table -->
+    <div class="table-card">
+      <div class="table-header">
+        <div class="table-title">IP Pool Health</div>
+        <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;">Refresh</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>IP Address</th>
+            <th>Health</th>
+            <th>Sent (24h)</th>
+            <th>4xx Rate</th>
+            <th>5xx Rate</th>
+            <th>TLS Success</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="ip-table-body">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Bottom Grid: Logs + Domains -->
+    <div class="bottom-grid">
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Recent Deliveries</div>
+          <button class="btn btn-outline" style="padding:4px 10px; font-size:11px;">View All</button>
+        </div>
+        <div class="scroll-container" id="log-container">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Top Domains</div>
+          <button class="btn btn-outline" style="padding:4px 10px; font-size:11px;">All Domains</button>
+        </div>
+        <div class="scroll-container" id="domain-container">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Configuration ───────────────────────────────────────────────────
+    const API_BASE = 'http://localhost:3000';
+    let ws = null;
+
+    // ── Simulated Data (replace with real API calls) ─────────────────
+    function generateMockData() {
+      return {
+        sent: Math.floor(Math.random() * 500000 + 1200000),
+        delivered: Math.floor(Math.random() * 500000 + 1150000),
+        bounced: Math.floor(Math.random() * 5000 + 15000),
+        deferred: Math.floor(Math.random() * 3000 + 8000),
+        queueDepth: Math.floor(Math.random() * 5000 + 2000),
+        latency: Math.floor(Math.random() * 100 + 120),
+        spools: {
+          incoming: Math.floor(Math.random() * 1000 + 500),
+          active: Math.floor(Math.random() * 2000 + 1000),
+          deferred: Math.floor(Math.random() * 500 + 200),
+          retry: Math.floor(Math.random() * 200 + 50),
+          dead: Math.floor(Math.random() * 20 + 5),
+          failed: Math.floor(Math.random() * 10 + 2),
+        },
+      };
+    }
+
+    // ── Number Formatting ───────────────────────────────────────────────
+    function formatNumber(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return n.toString();
+    }
+
+    // ── Update Stats ────────────────────────────────────────────────────
+    function updateStats(data) {
+      document.getElementById('stat-sent').textContent = formatNumber(data.sent);
+      document.getElementById('stat-delivered').textContent = formatNumber(data.delivered);
+      document.getElementById('stat-bounced').textContent = formatNumber(data.bounced);
+      document.getElementById('stat-deferred').textContent = formatNumber(data.deferred);
+      document.getElementById('stat-queue').textContent = formatNumber(data.queueDepth);
+      document.getElementById('stat-latency').innerHTML = data.latency + '<span style="font-size:14px">ms</span>';
+      document.getElementById('nav-queue-badge').textContent = formatNumber(data.queueDepth);
+
+      // Spools
+      document.getElementById('spool-incoming').textContent = formatNumber(data.spools.incoming);
+      document.getElementById('spool-active').textContent = formatNumber(data.spools.active);
+      document.getElementById('spool-deferred').textContent = formatNumber(data.spools.deferred);
+      document.getElementById('spool-retry').textContent = formatNumber(data.spools.retry);
+      document.getElementById('spool-dead').textContent = formatNumber(data.spools.dead);
+      document.getElementById('spool-failed').textContent = formatNumber(data.spools.failed);
+
+      document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+    }
+
+    // ── Delivery Chart ──────────────────────────────────────────────────
+    function renderDeliveryChart() {
+      const container = document.getElementById('delivery-chart');
+      container.innerHTML = '';
+      const bars = 48;
+      for (let i = 0; i < bars; i++) {
+        const delivered = Math.random() * 180 + 40;
+        const bounced = Math.random() * 20 + 3;
+        const total = delivered + bounced;
+
+        const barGroup = document.createElement('div');
+        barGroup.style.cssText = `flex:1; display:flex; flex-direction:column-reverse; gap:1px; height:100%;`;
+
+        const dBar = document.createElement('div');
+        dBar.className = 'chart-bar';
+        dBar.style.cssText = `height:${(delivered/240)*100}%; background: var(--gradient-success);`;
+        dBar.innerHTML = `<div class="chart-bar-tooltip">${Math.floor(delivered * 100)} delivered</div>`;
+
+        const bBar = document.createElement('div');
+        bBar.className = 'chart-bar';
+        bBar.style.cssText = `height:${(bounced/240)*100}%; background: var(--gradient-danger);`;
+        bBar.innerHTML = `<div class="chart-bar-tooltip">${Math.floor(bounced * 100)} bounced</div>`;
+
+        barGroup.appendChild(dBar);
+        barGroup.appendChild(bBar);
+        container.appendChild(barGroup);
+      }
+    }
+
+    // ── IP Health Table ─────────────────────────────────────────────────
+    function renderIPTable() {
+      const ips = [
+        { ip: '203.0.113.10', health: 0.98, sent: 450000, r4xx: 0.012, r5xx: 0.003, tls: 0.995, status: 'healthy' },
+        { ip: '203.0.113.11', health: 0.85, sent: 120000, r4xx: 0.025, r5xx: 0.008, tls: 0.98, status: 'warming' },
+        { ip: '203.0.113.12', health: 0.92, sent: 380000, r4xx: 0.018, r5xx: 0.005, tls: 0.99, status: 'healthy' },
+        { ip: '2001:db8::1', health: 0.95, sent: 280000, r4xx: 0.015, r5xx: 0.004, tls: 0.99, status: 'healthy' },
+        { ip: '203.0.113.20', health: 0.0, sent: 0, r4xx: 0, r5xx: 0, tls: 0, status: 'disabled' },
+      ];
+
+      const tbody = document.getElementById('ip-table-body');
+      tbody.innerHTML = ips.map(ip => {
+        const healthColor = ip.health > 0.9 ? 'var(--accent-green)' : ip.health > 0.7 ? 'var(--accent-orange)' : 'var(--accent-red)';
+        return `<tr>
+          <td style="font-family:monospace; font-weight:500;">${ip.ip}</td>
+          <td>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div class="health-bar"><div class="health-fill" style="width:${ip.health*100}%; background:${healthColor};"></div></div>
+              <span style="font-size:12px; color:${healthColor};">${(ip.health*100).toFixed(0)}%</span>
+            </div>
+          </td>
+          <td>${formatNumber(ip.sent)}</td>
+          <td>${(ip.r4xx*100).toFixed(1)}%</td>
+          <td>${(ip.r5xx*100).toFixed(1)}%</td>
+          <td>${(ip.tls*100).toFixed(1)}%</td>
+          <td><span class="badge badge-${ip.status}">${ip.status}</span></td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Recent Logs ─────────────────────────────────────────────────────
+    function renderLogs() {
+      const statuses = ['delivered', 'delivered', 'delivered', 'delivered', 'bounced', 'deferred', 'delivered', 'delivered'];
+      const domains = ['gmail.com', 'outlook.com', 'yahoo.com', 'protonmail.com', 'icloud.com', 'fastmail.com'];
+      const container = document.getElementById('log-container');
+      container.innerHTML = '';
+
+      for (let i = 0; i < 20; i++) {
+        const status = statuses[Math.floor(Math.random() * statuses.length)];
+        const domain = domains[Math.floor(Math.random() * domains.length)];
+        const time = new Date(Date.now() - Math.random() * 3600000).toLocaleTimeString();
+
+        container.innerHTML += `
+          <div class="log-entry">
+            <span class="log-time">${time}</span>
+            <span class="log-status log-${status}">${status}</span>
+            <span class="log-recipient">user${Math.floor(Math.random()*9999)}@${domain}</span>
+          </div>`;
+      }
+    }
+
+    // ── Top Domains ─────────────────────────────────────────────────────
+    function renderDomains() {
+      const domains = [
+        { name: 'gmail.com', sent: 450000, rate: 98.5 },
+        { name: 'outlook.com', sent: 280000, rate: 97.2 },
+        { name: 'yahoo.com', sent: 180000, rate: 96.8 },
+        { name: 'protonmail.com', sent: 45000, rate: 99.1 },
+        { name: 'icloud.com', sent: 32000, rate: 97.8 },
+        { name: 'fastmail.com', sent: 18000, rate: 99.5 },
+        { name: 'aol.com', sent: 12000, rate: 95.2 },
+        { name: 'zoho.com', sent: 8500, rate: 98.0 },
+      ];
+
+      const container = document.getElementById('domain-container');
+      container.innerHTML = domains.map(d => `
+        <div class="domain-row">
+          <div style="flex:1;">
+            <div class="domain-name">${d.name}</div>
+            <div class="domain-bar"><div class="domain-bar-fill" style="width:${d.rate}%;"></div></div>
+          </div>
+          <div class="domain-stats">
+            <span>${formatNumber(d.sent)} sent</span>
+            <span style="color:var(--accent-green);">${d.rate}%</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ── WebSocket Connection ────────────────────────────────────────────
+    function connectWebSocket() {
+      try {
+        ws = new WebSocket('ws://localhost:3000/ws');
+        ws.onopen = () => console.log('WebSocket connected');
+        ws.onmessage = (e) => {
+          const data = JSON.parse(e.data);
+          if (data.type === 'metrics_update') {
+            // Update real-time metrics
+          }
+        };
+        ws.onclose = () => setTimeout(connectWebSocket, 5000);
+        ws.onerror = () => {};
+      } catch(e) {}
+    }
+
+    // ── Export ─────────────────────────────────────────────────────────
+    function exportCSV() {
+      window.open(API_BASE + '/api/logs/export?limit=10000', '_blank');
+    }
+
+    function sendTestEmail() {
+      alert('Test email would be sent via POST /api/send');
+    }
+
+    // ── Initialize ──────────────────────────────────────────────────────
+    function init() {
+      const data = generateMockData();
+      updateStats(data);
+      renderDeliveryChart();
+      renderIPTable();
+      renderLogs();
+      renderDomains();
+      connectWebSocket();
+
+      // Refresh every 5 seconds
+      setInterval(() => {
+        const newData = generateMockData();
+        updateStats(newData);
+      }, 5000);
+
+      // Refresh chart every 30 seconds
+      setInterval(renderDeliveryChart, 30000);
+    }
+
+    init();
+  </script>
+</body>
+</html>

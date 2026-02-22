@@ -1,0 +1,20 @@
+# SRMTA Sub-Config: Database & Redis Credentials
+# File: config.d/40-database.yaml
+# Keep credentials separate from main config for security
+# Use environment variables for secrets in production
+
+database:
+  host: "${DB_HOST:localhost}"
+  port: 5432
+  user: "${DB_USER:srmta}"
+  password: "${DB_PASSWORD:changeme}"
+  dbname: "${DB_NAME:srmta}"
+  ssl_mode: "prefer"
+  max_open_conns: 25
+  max_idle_conns: 5
+
+redis:
+  addr: "${REDIS_ADDR:localhost:6379}"
+  password: "${REDIS_PASSWORD:}"
+  db: 0
+  pool_size: 10
