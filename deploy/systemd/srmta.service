@@ -6,7 +6,7 @@ Wants=network-online.target
 Requires=srmta.socket
 
 [Service]
-Type=notify
+Type=simple
 User=srmta
 Group=srmta
 EnvironmentFile=-/etc/srmta/srmta.env
@@ -14,7 +14,7 @@ ExecStart=/usr/sbin/srmta -config /etc/srmta/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5s
-WatchdogSec=30s
+
 
 # Security hardening
 NoNewPrivileges=yes

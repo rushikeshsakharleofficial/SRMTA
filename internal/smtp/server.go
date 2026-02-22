@@ -67,13 +67,22 @@ func NewServer(cfg config.SMTPConfig, tlsCfgData config.TLSConfig, q *queue.Mana
 
 // Start begins accepting SMTP connections.
 func (s *Server) Start(ctx context.Context) error {
-	var err error
-	s.listener, err = net.Listen("tcp", s.cfg.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", s.cfg.ListenAddr, err)
+	// Resolve listen address: InboundAddr > ListenAddr > default :25
+	listenAddr := s.cfg.InboundAddr
+	if listenAddr == "" {
+		listenAddr = s.cfg.ListenAddr
+	}
+	if listenAddr == "" {
+		listenAddr = ":25"
 	}
 
-	s.logger.Info("SMTP server listening", "addr", s.cfg.ListenAddr)
+	var err error
+	s.listener, err = net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+	}
+
+	s.logger.Info("SMTP server listening", "addr", listenAddr)
 
 	for {
 		// Check if we're shutting down

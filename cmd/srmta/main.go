@@ -61,17 +61,19 @@ func main() {
 	// ── Initialize Data Stores ──────────────────────────────────────────
 	pgStore, err := store.NewPostgresStore(cfg.Database)
 	if err != nil {
-		logger.Error("Failed to connect to PostgreSQL", "error", err)
-		os.Exit(1)
+		logger.Warn("PostgreSQL not available — event logging disabled", "error", err)
 	}
-	defer pgStore.Close()
+	if pgStore != nil {
+		defer pgStore.Close()
+	}
 
 	redisStore, err := store.NewRedisStore(cfg.Redis)
 	if err != nil {
-		logger.Error("Failed to connect to Redis", "error", err)
-		os.Exit(1)
+		logger.Warn("Redis not available — queue state caching disabled", "error", err)
 	}
-	defer redisStore.Close()
+	if redisStore != nil {
+		defer redisStore.Close()
+	}
 
 	// ── Initialize DNS Resolver ─────────────────────────────────────────
 	dnsResolver := dns.NewResolver(cfg.DNS, redisStore, logger)
@@ -82,8 +84,7 @@ func main() {
 	// ── Initialize DKIM Signer ──────────────────────────────────────────
 	dkimSigner, err := dkim.NewSigner(cfg.DKIM)
 	if err != nil {
-		logger.Error("Failed to initialize DKIM signer", "error", err)
-		os.Exit(1)
+		logger.Warn("DKIM signer not available — signing disabled", "error", err)
 	}
 
 	// ── Initialize Bounce Classifier ────────────────────────────────────
@@ -154,8 +155,15 @@ func main() {
 		}
 	}()
 
+	smtpAddr := cfg.SMTP.InboundAddr
+	if smtpAddr == "" {
+		smtpAddr = cfg.SMTP.ListenAddr
+	}
+	if smtpAddr == "" {
+		smtpAddr = ":25"
+	}
 	logger.Info("SRMTA fully initialized and accepting connections",
-		"smtp_addr", cfg.SMTP.ListenAddr,
+		"smtp_addr", smtpAddr,
 		"metrics_addr", cfg.Metrics.ListenAddr,
 	)
 

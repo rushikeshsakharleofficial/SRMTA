@@ -1,6 +1,6 @@
 %global debug_package %{nil}
 
-%define _version    1.0.0
+%define _version    1.1.0
 %define _release    1%{?dist}
 %define _name       srmta
 
@@ -14,10 +14,33 @@ Source0:    %{name}-%{version}.tar.gz
 
 BuildRequires:  golang >= 1.22
 BuildRequires:  systemd-rpm-macros
+BuildRequires:  make
 
+# ── Hard dependencies ────────────────────────────────────────────────
 Requires:       systemd
 Requires:       ca-certificates
+Requires:       openssl >= 1.1
+Requires:       glibc
+Requires:       bind-utils
+Requires:       logrotate
 Requires(pre):  shadow-utils
+
+# ── Recommended (installed by default if available) ──────────────────
+Recommends:     postgresql-server >= 14
+Recommends:     redis >= 6
+Recommends:     nodejs >= 20
+Recommends:     firewalld
+
+# ── Suggested (optional enhancements) ────────────────────────────────
+Suggests:       grafana
+Suggests:       prometheus2
+Suggests:       certbot
+Suggests:       opendkim
+
+# ── Conflicts with other MTAs ────────────────────────────────────────
+Conflicts:      postfix
+Conflicts:      sendmail
+Conflicts:      exim
 
 %description
 SRMTA is a production-grade, horizontally scalable, RFC 5321/5322 compliant
