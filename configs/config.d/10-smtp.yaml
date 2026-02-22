@@ -3,7 +3,9 @@
 # Loaded after main config.yaml, overrides SMTP-specific settings
 
 smtp:
-  listen_addr: ":2525"
+  inbound_addr: ":25"           # Incoming mail reception (MX)
+  submission_addr: ":587"       # Authenticated submission (MSA)
+  outbound_port: 25             # Remote port for outbound delivery
   max_connections: 2000
   max_message_size: 52428800    # 50MB
   read_timeout: "60s"

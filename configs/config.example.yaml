@@ -1,5 +1,9 @@
 # SRMTA Configuration File
 # Copy to /etc/srmta/config.yaml and adjust for your environment
+# Sub-configs in config.d/*.yaml are merged on top of this file (sorted alphabetically)
+
+# Path to config.d/ directory (default: config.d/ next to this file)
+config_dir: "/etc/srmta/config.d"
 
 server:
   hostname: "mta1.example.com"
@@ -8,7 +12,9 @@ server:
   shutdown_grace: "30s"
 
 smtp:
-  listen_addr: ":2525"
+  inbound_addr: ":25"           # Port for receiving mail (MX traffic)
+  submission_addr: ":587"       # Port for MSA submission (authenticated clients)
+  outbound_port: 25             # Remote port used for outbound delivery
   max_connections: 1000
   max_message_size: 52428800  # 50MB
   read_timeout: "60s"
@@ -20,6 +26,8 @@ smtp:
   allowed_domains:
     - "example.com"
     - "mail.example.com"
+  allowed_domains_file: "/etc/srmta/allowed_domains.ini"  # INI-format domain list
+  allowed_ips_file: "/etc/srmta/allowed_ips.ini"          # INI-format IP/CIDR list
   enable_pipelining: true
 
 queue:

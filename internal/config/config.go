@@ -46,19 +46,24 @@ type ServerConfig struct {
 	ShutdownGrace time.Duration `yaml:"shutdown_grace"`
 }
 
-// SMTPConfig holds inbound SMTP server settings.
+// SMTPConfig holds SMTP server settings for inbound and outbound traffic.
 type SMTPConfig struct {
-	ListenAddr       string        `yaml:"listen_addr"`
-	MaxConnections   int           `yaml:"max_connections"`
-	MaxMessageSize   int64         `yaml:"max_message_size"`
-	ReadTimeout      time.Duration `yaml:"read_timeout"`
-	WriteTimeout     time.Duration `yaml:"write_timeout"`
-	MaxRecipients    int           `yaml:"max_recipients"`
-	RequireAuth      bool          `yaml:"require_auth"`
-	RequireTLS       bool          `yaml:"require_tls"`
-	BannerHostname   string        `yaml:"banner_hostname"`
-	AllowedDomains   []string      `yaml:"allowed_domains"`
-	EnablePipelining bool          `yaml:"enable_pipelining"`
+	ListenAddr         string        `yaml:"listen_addr"`     // Deprecated: use inbound_addr instead
+	InboundAddr        string        `yaml:"inbound_addr"`    // Inbound (receiving) listen address, e.g. ":25"
+	OutboundPort       int           `yaml:"outbound_port"`   // Outbound (sending) port, e.g. 587
+	SubmissionAddr     string        `yaml:"submission_addr"` // MSA submission listen address, e.g. ":587"
+	MaxConnections     int           `yaml:"max_connections"`
+	MaxMessageSize     int64         `yaml:"max_message_size"`
+	ReadTimeout        time.Duration `yaml:"read_timeout"`
+	WriteTimeout       time.Duration `yaml:"write_timeout"`
+	MaxRecipients      int           `yaml:"max_recipients"`
+	RequireAuth        bool          `yaml:"require_auth"`
+	RequireTLS         bool          `yaml:"require_tls"`
+	BannerHostname     string        `yaml:"banner_hostname"`
+	AllowedDomains     []string      `yaml:"allowed_domains"`
+	AllowedDomainsFile string        `yaml:"allowed_domains_file"` // Path to allowed_domains.ini
+	AllowedIPsFile     string        `yaml:"allowed_ips_file"`     // Path to allowed_ips.ini
+	EnablePipelining   bool          `yaml:"enable_pipelining"`
 }
 
 // QueueConfig holds queue management settings.
@@ -313,6 +318,15 @@ func mergeConfig(dst, src *Config) {
 	if src.SMTP.ListenAddr != "" {
 		dst.SMTP.ListenAddr = src.SMTP.ListenAddr
 	}
+	if src.SMTP.InboundAddr != "" {
+		dst.SMTP.InboundAddr = src.SMTP.InboundAddr
+	}
+	if src.SMTP.OutboundPort != 0 {
+		dst.SMTP.OutboundPort = src.SMTP.OutboundPort
+	}
+	if src.SMTP.SubmissionAddr != "" {
+		dst.SMTP.SubmissionAddr = src.SMTP.SubmissionAddr
+	}
 	if src.SMTP.MaxConnections != 0 {
 		dst.SMTP.MaxConnections = src.SMTP.MaxConnections
 	}
@@ -339,6 +353,12 @@ func mergeConfig(dst, src *Config) {
 	}
 	if len(src.SMTP.AllowedDomains) > 0 {
 		dst.SMTP.AllowedDomains = src.SMTP.AllowedDomains
+	}
+	if src.SMTP.AllowedDomainsFile != "" {
+		dst.SMTP.AllowedDomainsFile = src.SMTP.AllowedDomainsFile
+	}
+	if src.SMTP.AllowedIPsFile != "" {
+		dst.SMTP.AllowedIPsFile = src.SMTP.AllowedIPsFile
 	}
 	if src.SMTP.EnablePipelining {
 		dst.SMTP.EnablePipelining = true
@@ -588,8 +608,19 @@ func applyDefaults(cfg *Config) {
 	if cfg.Server.ShutdownGrace == 0 {
 		cfg.Server.ShutdownGrace = 30 * time.Second
 	}
-	if cfg.SMTP.ListenAddr == "" {
-		cfg.SMTP.ListenAddr = ":2525"
+	// Backward compat: if listen_addr is set but inbound_addr is not, use listen_addr
+	if cfg.SMTP.InboundAddr == "" {
+		if cfg.SMTP.ListenAddr != "" {
+			cfg.SMTP.InboundAddr = cfg.SMTP.ListenAddr
+		} else {
+			cfg.SMTP.InboundAddr = ":25"
+		}
+	}
+	if cfg.SMTP.OutboundPort == 0 {
+		cfg.SMTP.OutboundPort = 587
+	}
+	if cfg.SMTP.SubmissionAddr == "" {
+		cfg.SMTP.SubmissionAddr = ":587"
 	}
 	if cfg.SMTP.MaxConnections == 0 {
 		cfg.SMTP.MaxConnections = 1000
