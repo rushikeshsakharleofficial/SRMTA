@@ -35,7 +35,9 @@ type Config struct {
 	Redis     RedisConfig     `yaml:"redis"`
 	TLS       TLSConfig       `yaml:"tls"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	ConfigDir string          `yaml:"config_dir"` // Path to config.d/ directory (default: config.d/ relative to main config)
+	Throttle  ThrottleConfig  `yaml:"throttle"`
+	Routing   RoutingConfig   `yaml:"routing"`
+	ConfigDir string          `yaml:"config_dir"`
 }
 
 // ServerConfig holds general server settings.
@@ -198,6 +200,43 @@ type RateLimitConfig struct {
 	GlobalRate    int `yaml:"global_rate"`     // emails/sec
 	PerDomainRate int `yaml:"per_domain_rate"` // emails/sec per domain
 	PerSenderRate int `yaml:"per_sender_rate"` // emails/sec per sender
+}
+
+// ThrottleConfig holds per-provider speed management settings.
+type ThrottleConfig struct {
+	Defaults  ThrottleProviderRule   `yaml:"defaults"`
+	Providers []ThrottleProviderRule `yaml:"providers"`
+}
+
+// ThrottleProviderRule defines speed limits for a specific provider.
+type ThrottleProviderRule struct {
+	Name              string        `yaml:"name"`
+	MXPatterns        []string      `yaml:"mx_patterns"`
+	DomainPatterns    []string      `yaml:"domain_patterns"`
+	MaxConnections    int           `yaml:"max_connections"`
+	MaxPerSecond      int           `yaml:"max_per_second"`
+	MaxPerMinute      int           `yaml:"max_per_minute"`
+	MaxPerHour        int           `yaml:"max_per_hour"`
+	MaxRecipientsConn int           `yaml:"max_recipients_conn"`
+	ConnectionDelay   time.Duration `yaml:"connection_delay"`
+	MessageDelay      time.Duration `yaml:"message_delay"`
+	BackoffMultiplier float64       `yaml:"backoff_multiplier"`
+	MaxBackoff        time.Duration `yaml:"max_backoff"`
+}
+
+// RoutingConfig holds MX-based IP routing settings.
+type RoutingConfig struct {
+	Routes      []ProviderRoute `yaml:"routes"`
+	FallbackIPs []string        `yaml:"fallback_ips"`
+}
+
+// ProviderRoute maps a provider to dedicated IPs with fallback.
+type ProviderRoute struct {
+	Name           string   `yaml:"name"`
+	MXPatterns     []string `yaml:"mx_patterns"`
+	DomainPatterns []string `yaml:"domain_patterns"`
+	PrimaryIPs     []string `yaml:"primary_ips"`
+	BackupIPs      []string `yaml:"backup_ips"`
 }
 
 // Load reads the main YAML configuration file and merges any sub-configs
@@ -590,6 +629,22 @@ func mergeConfig(dst, src *Config) {
 	}
 	if src.RateLimit.PerSenderRate != 0 {
 		dst.RateLimit.PerSenderRate = src.RateLimit.PerSenderRate
+	}
+
+	// Throttle — providers replace entirely if set
+	if len(src.Throttle.Providers) > 0 {
+		dst.Throttle.Providers = src.Throttle.Providers
+	}
+	if src.Throttle.Defaults.MaxConnections != 0 {
+		dst.Throttle.Defaults = src.Throttle.Defaults
+	}
+
+	// Routing — routes replace entirely if set
+	if len(src.Routing.Routes) > 0 {
+		dst.Routing.Routes = src.Routing.Routes
+	}
+	if len(src.Routing.FallbackIPs) > 0 {
+		dst.Routing.FallbackIPs = src.Routing.FallbackIPs
 	}
 }
 
