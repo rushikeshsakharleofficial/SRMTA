@@ -235,9 +235,18 @@ func (r *Resolver) getFromRedis(domain string) []*MXRecord {
 	if r.redis == nil {
 		return nil
 	}
-	records, err := r.redis.GetDNSCache(domain)
+	storeRecords, err := r.redis.GetDNSCache(domain)
 	if err != nil {
 		return nil
+	}
+	// Convert []*store.MXRecord → []*MXRecord
+	records := make([]*MXRecord, len(storeRecords))
+	for i, sr := range storeRecords {
+		records[i] = &MXRecord{
+			Host:     sr.Host,
+			Priority: sr.Priority,
+			IPs:      sr.IPs,
+		}
 	}
 	return records
 }
