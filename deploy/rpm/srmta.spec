@@ -118,7 +118,7 @@ echo "║    systemctl enable --now srmta.socket            ║"
 echo "║    systemctl enable --now srmta.service           ║"
 echo "║                                                  ║"
 echo "║  Apply database schema:                          ║"
-echo "║    psql -U srmta -f /usr/share/srmta/migrations/001_init.sql ║"
+echo "║    psql -U srmta -f /usr/share/srmta/migrations/init_postgres.sql ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
