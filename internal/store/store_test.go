@@ -80,13 +80,13 @@ func TestNewDatabase_UnsupportedDriver(t *testing.T) {
 
 func TestPostgresDSN(t *testing.T) {
 	cfg := config.DatabaseConfig{
-		Driver:  "postgres",
-		Host:    "db.example.com",
-		Port:    5432,
-		User:    "admin",
+		Driver:   "postgres",
+		Host:     "db.example.com",
+		Port:     5432,
+		User:     "admin",
 		Password: "secret",
-		DBName:  "maildb",
-		SSLMode: "require",
+		DBName:   "maildb",
+		SSLMode:  "require",
 	}
 
 	dsn := cfg.DSN()
@@ -98,13 +98,13 @@ func TestPostgresDSN(t *testing.T) {
 
 func TestMySQLDSN(t *testing.T) {
 	cfg := config.DatabaseConfig{
-		Driver:  "mysql",
-		Host:    "db.example.com",
-		Port:    3306,
-		User:    "admin",
+		Driver:   "mysql",
+		Host:     "db.example.com",
+		Port:     3306,
+		User:     "admin",
 		Password: "secret",
-		DBName:  "maildb",
-		Charset: "utf8mb4",
+		DBName:   "maildb",
+		Charset:  "utf8mb4",
 	}
 
 	dsn := cfg.DSN()
@@ -140,13 +140,13 @@ func TestMySQLDSN_DefaultCharset(t *testing.T) {
 
 func TestMySQLDSN_WithTLS(t *testing.T) {
 	cfg := config.DatabaseConfig{
-		Driver:  "mysql",
-		Host:    "db.example.com",
-		Port:    3306,
-		User:    "admin",
+		Driver:   "mysql",
+		Host:     "db.example.com",
+		Port:     3306,
+		User:     "admin",
 		Password: "secret",
-		DBName:  "maildb",
-		SSLMode: "true",
+		DBName:   "maildb",
+		SSLMode:  "true",
 	}
 
 	dsn := cfg.DSN()

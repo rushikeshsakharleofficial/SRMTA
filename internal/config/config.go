@@ -150,14 +150,17 @@ type BounceConfig struct {
 
 // LoggingConfig holds logging settings.
 type LoggingConfig struct {
-	Level      string `yaml:"level"`  // debug, info, warn, error
-	Format     string `yaml:"format"` // json, text
-	Output     string `yaml:"output"` // stdout, file
-	FilePath   string `yaml:"file_path"`
-	MaxSizeMB  int    `yaml:"max_size_mb"`
-	MaxBackups int    `yaml:"max_backups"`
-	MaxAgeDays int    `yaml:"max_age_days"`
-	Compress   bool   `yaml:"compress"`
+	Level           string `yaml:"level"`            // debug, info, warn, error
+	Format          string `yaml:"format"`           // json, text
+	Output          string `yaml:"output"`           // stdout, file
+	FilePath        string `yaml:"file_path"`        // General log file (all levels)
+	ErrorFile       string `yaml:"error_file"`       // Error log: /var/log/srmta/error.log
+	AccessFile      string `yaml:"access_file"`      // Access log: /var/log/srmta/access.log
+	TransactionFile string `yaml:"transaction_file"` // Transaction CSV: /var/log/srmta/transaction.csv
+	MaxSizeMB       int    `yaml:"max_size_mb"`
+	MaxBackups      int    `yaml:"max_backups"`
+	MaxAgeDays      int    `yaml:"max_age_days"`
+	Compress        bool   `yaml:"compress"`
 }
 
 // MetricsConfig holds Prometheus metrics settings.
@@ -169,14 +172,14 @@ type MetricsConfig struct {
 
 // DatabaseConfig holds connection settings for PostgreSQL or MySQL/MariaDB.
 type DatabaseConfig struct {
-	Driver       string `yaml:"driver"`        // "postgres" or "mysql" (default: postgres)
+	Driver       string `yaml:"driver"` // "postgres" or "mysql" (default: postgres)
 	Host         string `yaml:"host"`
 	Port         int    `yaml:"port"`
 	User         string `yaml:"user"`
 	Password     string `yaml:"password"`
 	DBName       string `yaml:"dbname"`
-	SSLMode      string `yaml:"ssl_mode"`      // postgres: disable/require/verify-full; mysql: true/false/skip-verify
-	Charset      string `yaml:"charset"`       // MySQL charset (default: utf8mb4)
+	SSLMode      string `yaml:"ssl_mode"` // postgres: disable/require/verify-full; mysql: true/false/skip-verify
+	Charset      string `yaml:"charset"`  // MySQL charset (default: utf8mb4)
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 }
@@ -674,7 +677,7 @@ func applyDefaults(cfg *Config) {
 		}
 	}
 	if cfg.SMTP.OutboundPort == 0 {
-		cfg.SMTP.OutboundPort = 587
+		cfg.SMTP.OutboundPort = 25
 	}
 	if cfg.SMTP.SubmissionAddr == "" {
 		cfg.SMTP.SubmissionAddr = ":587"
@@ -946,4 +949,3 @@ func joinStrings(strs []string, sep string) string {
 	}
 	return result
 }
-

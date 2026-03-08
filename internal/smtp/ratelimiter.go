@@ -17,7 +17,7 @@ type RateLimiter struct {
 
 // bucket tracks request counts for a single IP.
 type bucket struct {
-	count    int
+	count       int
 	windowStart time.Time
 }
 

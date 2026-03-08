@@ -33,11 +33,12 @@ type DeliveryResult struct {
 
 // Client is the outbound SMTP client with connection pooling.
 type Client struct {
-	cfg      config.DeliveryConfig
-	hostname string
-	logger   *logging.Logger
-	pools    map[string]*connPool // keyed by MX host
-	mu       sync.RWMutex
+	cfg          config.DeliveryConfig
+	outboundPort int
+	hostname     string
+	logger       *logging.Logger
+	pools        map[string]*connPool // keyed by MX host
+	mu           sync.RWMutex
 }
 
 // connPool manages a pool of connections to a specific MX host.
@@ -60,15 +61,16 @@ type smtpConn struct {
 }
 
 // NewClient creates a new outbound SMTP client.
-func NewClient(cfg config.DeliveryConfig, hostname string, logger *logging.Logger) *Client {
+func NewClient(cfg config.DeliveryConfig, outboundPort int, hostname string, logger *logging.Logger) *Client {
 	if hostname == "" {
 		hostname = "srmta.local"
 	}
 	return &Client{
-		cfg:      cfg,
-		hostname: hostname,
-		logger:   logger,
-		pools:    make(map[string]*connPool),
+		cfg:          cfg,
+		outboundPort: outboundPort,
+		hostname:     hostname,
+		logger:       logger,
+		pools:        make(map[string]*connPool),
 	}
 }
 
@@ -143,8 +145,12 @@ func (c *Client) dial(mxHost string, localIP string) (*smtpConn, error) {
 		LocalAddr: localAddr,
 	}
 
-	// Connect to port 25
-	addr := mxHost + ":25"
+	// Connect to configured outbound port
+	port := c.outboundPort
+	if port == 0 {
+		port = 25 // fallback
+	}
+	addr := net.JoinHostPort(mxHost, fmt.Sprintf("%d", port))
 	netConn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)

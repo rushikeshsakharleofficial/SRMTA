@@ -45,6 +45,7 @@ func NewEngine(
 	dkimSigner *dkim.Signer,
 	bouncer *bounce.Classifier,
 	db store.Database,
+	outboundPort int,
 	logger *logging.Logger,
 ) *Engine {
 	return &Engine{
@@ -57,7 +58,7 @@ func NewEngine(
 		bouncer:    bouncer,
 		db:         db,
 		logger:     logger,
-		client:     smtp.NewClient(cfg, hostname, logger),
+		client:     smtp.NewClient(cfg, outboundPort, hostname, logger),
 		scheduler:  queue.NewScheduler(cfg.PerDomainConcurrency, 0),
 		circuitBrk: NewCircuitBreakerManager(5, 30*time.Second),
 	}
@@ -274,14 +275,32 @@ func (e *Engine) loadMessageData(msg *queue.Message) ([]byte, error) {
 	return store.ReadFile(msg.DataPath)
 }
 
-// recordEvent logs a delivery event to PostgreSQL.
+// recordEvent logs a delivery event to the database and transaction log.
 func (e *Engine) recordEvent(msg *queue.Message, result *smtp.DeliveryResult, duration time.Duration) {
-	if e.db == nil {
-		return
+	now := time.Now()
+
+	// Write to database
+	if e.db != nil {
+		event := &store.DeliveryEvent{
+			Timestamp:         now,
+			MessageID:         msg.ID,
+			Sender:            msg.Sender,
+			Recipient:         result.Recipient,
+			RemoteMX:          result.RemoteMX,
+			ResponseCode:      result.ResponseCode,
+			ResponseText:      result.ResponseText,
+			IPUsed:            result.IPUsed,
+			TLSStatus:         result.TLSUsed,
+			RetryCount:        msg.RetryCount,
+			ProcessingLatency: duration.Milliseconds(),
+			Status:            result.Status,
+		}
+		e.db.RecordEvent(event)
 	}
 
-	event := &store.DeliveryEvent{
-		Timestamp:         time.Now(),
+	// Write to transaction CSV log
+	e.logger.Transaction(&logging.DeliveryEvent{
+		Timestamp:         now,
 		MessageID:         msg.ID,
 		Sender:            msg.Sender,
 		Recipient:         result.Recipient,
@@ -293,7 +312,5 @@ func (e *Engine) recordEvent(msg *queue.Message, result *smtp.DeliveryResult, du
 		RetryCount:        msg.RetryCount,
 		ProcessingLatency: duration.Milliseconds(),
 		Status:            result.Status,
-	}
-
-	e.db.RecordEvent(event)
+	})
 }

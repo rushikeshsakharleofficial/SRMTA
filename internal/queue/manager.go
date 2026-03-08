@@ -166,6 +166,13 @@ func (m *Manager) Enqueue(sender string, recipients []string, data []byte, remot
 		"size", len(data),
 	)
 
+	// Notify workers to process this message immediately
+	select {
+	case m.msgChan <- msg:
+	default:
+		m.logger.Warn("msgChan is full, message will be processed on next queue scan", "id", msgID)
+	}
+
 	return msgID, nil
 }
 

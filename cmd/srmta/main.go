@@ -48,6 +48,7 @@ func main() {
 
 	// ── Initialize Logger ───────────────────────────────────────────────
 	logger := logging.NewLogger(cfg.Logging)
+	defer logger.Close()
 	logger.Info("SRMTA starting", "version", version, "hostname", cfg.Server.Hostname)
 
 	// ── Context with cancellation for graceful shutdown ─────────────────
@@ -109,6 +110,7 @@ func main() {
 		dkimSigner,
 		bounceClassifier,
 		dbStore,
+		cfg.SMTP.OutboundPort,
 		logger,
 	)
 

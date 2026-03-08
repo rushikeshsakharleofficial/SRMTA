@@ -52,8 +52,8 @@ type AuthValidator interface {
 // defaultAuthValidator accepts all credentials (for development only).
 type defaultAuthValidator struct{}
 
-func (d *defaultAuthValidator) ValidatePlain(username, password string) bool  { return true }
-func (d *defaultAuthValidator) ValidateLogin(username, password string) bool  { return true }
+func (d *defaultAuthValidator) ValidatePlain(username, password string) bool { return true }
+func (d *defaultAuthValidator) ValidateLogin(username, password string) bool { return true }
 func (d *defaultAuthValidator) ValidateCRAMMD5(username, challenge, resp string) bool {
 	return true
 }
@@ -125,6 +125,16 @@ func generateCorrelationID() string {
 // Handle processes the SMTP session from greeting to completion.
 func (s *Session) Handle(ctx context.Context) {
 	defer s.conn.Close()
+	defer func() {
+		duration := time.Since(s.startTime)
+		s.logger.Access("SMTP connection closed",
+			"remote", s.remoteAddr, "action", "disconnect",
+			"duration_ms", duration.Milliseconds(),
+			"messages", len(s.rcptTo),
+			"tls", s.tls,
+			"authenticated", s.auth,
+			"correlation_id", s.correlationID)
+	}()
 
 	hostname := s.cfg.BannerHostname
 	if hostname == "" {
@@ -136,15 +146,25 @@ func (s *Session) Handle(ctx context.Context) {
 		s.writef("421 4.7.0 Too many connections from your IP, try again later")
 		s.logger.Warn("Rate limited connection",
 			"remote", s.remoteAddr, "correlation_id", s.correlationID)
+		s.logger.Access("SMTP connection rejected (rate limit)",
+			"remote", s.remoteAddr, "action", "reject",
+			"reason", "rate_limit", "correlation_id", s.correlationID)
 		metrics.ConnectionsRejected.Inc()
 		return
 	}
 
+	s.logger.Access("SMTP connection opened",
+		"remote", s.remoteAddr, "action", "connect",
+		"correlation_id", s.correlationID)
 	s.logger.Debug("New SMTP session",
 		"remote", s.remoteAddr, "correlation_id", s.correlationID)
 
 	// Send greeting banner
-	s.writef("220 %s ESMTP SRMTA Ready", hostname)
+	bannerHost := s.cfg.BannerHostname
+	if bannerHost == "" {
+		bannerHost = "srmta.local"
+	}
+	s.writef("220 %s ESMTP SRMTA Ready", bannerHost)
 
 	for {
 		select {

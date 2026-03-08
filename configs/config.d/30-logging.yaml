@@ -1,0 +1,18 @@
+# SRMTA Sub-Config: Logging
+# File: config.d/30-logging.yaml
+
+logging:
+  level: "info"                # debug, info, warn, error
+  format: "json"               # json output format
+  output: "stdout"             # stdout or file
+
+  # Separate log files — each serves a distinct purpose
+  error_file: "/var/log/srmta/error.log"             # Errors & warnings only (JSON)
+  access_file: "/var/log/srmta/access.log"            # SMTP session activity (JSON)
+  transaction_file: "/var/log/srmta/transaction.csv"   # Delivery events (CSV)
+
+  # Rotation settings (for future logrotate integration)
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 30
+  compress: true
