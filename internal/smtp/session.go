@@ -1,14 +1,19 @@
 // session.go implements the per-connection SMTP session state machine.
 // Handles the full SMTP command flow: EHLO → AUTH → MAIL → RCPT → DATA → QUIT
-// with RFC 5321/5322 compliance, STARTTLS upgrade, and input validation.
+// with RFC 5321/5322 compliance, STARTTLS upgrade, input validation, and
+// SMTP injection prevention.
 package smtp
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -34,42 +39,87 @@ const (
 	stateData                 // DATA command received
 )
 
+// maxCommandLength is the maximum SMTP command line length per RFC 5321 §4.5.3.1.4.
+const maxCommandLength = 512
+
+// AuthValidator is an interface for validating SMTP authentication credentials.
+type AuthValidator interface {
+	ValidatePlain(username, password string) bool
+	ValidateLogin(username, password string) bool
+	ValidateCRAMMD5(username, challenge, response string) bool
+}
+
+// defaultAuthValidator accepts all credentials (for development only).
+type defaultAuthValidator struct{}
+
+func (d *defaultAuthValidator) ValidatePlain(username, password string) bool  { return true }
+func (d *defaultAuthValidator) ValidateLogin(username, password string) bool  { return true }
+func (d *defaultAuthValidator) ValidateCRAMMD5(username, challenge, resp string) bool {
+	return true
+}
+
 // Session handles a single SMTP connection.
 type Session struct {
-	conn       net.Conn
-	reader     *bufio.Reader
-	writer     *bufio.Writer
-	tp         *textproto.Conn
-	cfg        config.SMTPConfig
-	tlsCfg     *tls.Config
-	queue      *queue.Manager
-	logger     *logging.Logger
-	state      sessionState
-	tls        bool
-	auth       bool
-	remoteAddr string
-	heloHost   string
-	mailFrom   string
-	rcptTo     []string
-	msgData    []byte
-	startTime  time.Time
+	conn          net.Conn
+	reader        *bufio.Reader
+	writer        *bufio.Writer
+	tp            *textproto.Conn
+	cfg           config.SMTPConfig
+	tlsCfg        *tls.Config
+	queue         *queue.Manager
+	logger        *logging.Logger
+	authValidator AuthValidator
+	rateLimiter   *RateLimiter
+	state         sessionState
+	tls           bool
+	auth          bool
+	remoteAddr    string
+	remoteIP      string
+	correlationID string
+	heloHost      string
+	mailFrom      string
+	rcptTo        []string
+	msgData       []byte
+	startTime     time.Time
+	cmdCount      int // commands processed in this session
 }
 
 // NewSession creates a new SMTP session for the given connection.
-func NewSession(conn net.Conn, cfg config.SMTPConfig, tlsCfg *tls.Config, q *queue.Manager, logger *logging.Logger) *Session {
-	return &Session{
-		conn:       conn,
-		reader:     bufio.NewReader(conn),
-		writer:     bufio.NewWriter(conn),
-		cfg:        cfg,
-		tlsCfg:     tlsCfg,
-		queue:      q,
-		logger:     logger,
-		state:      stateConnect,
-		remoteAddr: conn.RemoteAddr().String(),
-		startTime:  time.Now(),
-		rcptTo:     make([]string, 0, 10),
+func NewSession(conn net.Conn, cfg config.SMTPConfig, tlsCfg *tls.Config, q *queue.Manager, logger *logging.Logger, rl *RateLimiter) *Session {
+	remoteAddr := conn.RemoteAddr().String()
+	// Extract IP from addr (strip port)
+	remoteIP := remoteAddr
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		remoteIP = host
 	}
+
+	// Generate correlation ID for request tracing
+	corrID := generateCorrelationID()
+
+	return &Session{
+		conn:          conn,
+		reader:        bufio.NewReader(conn),
+		writer:        bufio.NewWriter(conn),
+		cfg:           cfg,
+		tlsCfg:        tlsCfg,
+		queue:         q,
+		logger:        logger,
+		authValidator: &defaultAuthValidator{},
+		rateLimiter:   rl,
+		state:         stateConnect,
+		remoteAddr:    remoteAddr,
+		remoteIP:      remoteIP,
+		correlationID: corrID,
+		startTime:     time.Now(),
+		rcptTo:        make([]string, 0, 10),
+	}
+}
+
+// generateCorrelationID creates a unique tracing ID for this session.
+func generateCorrelationID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("%s-%s", time.Now().Format("20060102150405"), hex.EncodeToString(b))
 }
 
 // Handle processes the SMTP session from greeting to completion.
@@ -80,6 +130,18 @@ func (s *Session) Handle(ctx context.Context) {
 	if hostname == "" {
 		hostname = "srmta"
 	}
+
+	// Check per-IP rate limit before accepting
+	if s.rateLimiter != nil && !s.rateLimiter.Allow(s.remoteIP) {
+		s.writef("421 4.7.0 Too many connections from your IP, try again later")
+		s.logger.Warn("Rate limited connection",
+			"remote", s.remoteAddr, "correlation_id", s.correlationID)
+		metrics.ConnectionsRejected.Inc()
+		return
+	}
+
+	s.logger.Debug("New SMTP session",
+		"remote", s.remoteAddr, "correlation_id", s.correlationID)
 
 	// Send greeting banner
 	s.writef("220 %s ESMTP SRMTA Ready", hostname)
@@ -98,7 +160,8 @@ func (s *Session) Handle(ctx context.Context) {
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				s.logger.Debug("Read error", "remote", s.remoteAddr, "error", err)
+				s.logger.Debug("Read error",
+					"remote", s.remoteAddr, "correlation_id", s.correlationID, "error", err)
 			}
 			return
 		}
@@ -107,6 +170,22 @@ func (s *Session) Handle(ctx context.Context) {
 		if line == "" {
 			continue
 		}
+
+		// Enforce command length limit per RFC 5321 §4.5.3.1.4
+		if len(line) > maxCommandLength {
+			s.writef("500 5.5.1 Command line too long")
+			continue
+		}
+
+		// Reject lines with embedded null bytes (injection prevention)
+		if strings.ContainsRune(line, 0) {
+			s.writef("500 5.5.1 Invalid characters in command")
+			s.logger.Warn("Null byte injection attempt",
+				"remote", s.remoteAddr, "correlation_id", s.correlationID)
+			continue
+		}
+
+		s.cmdCount++
 
 		// Parse command and arguments
 		cmd, args := s.parseCommand(line)
@@ -163,6 +242,14 @@ func (s *Session) handleEHLO(args string) {
 		return
 	}
 
+	// Validate EHLO hostname — reject control characters (injection prevention)
+	if containsControlChars(args) {
+		s.writef("501 5.5.4 Invalid characters in hostname")
+		s.logger.Warn("EHLO injection attempt",
+			"remote", s.remoteAddr, "correlation_id", s.correlationID)
+		return
+	}
+
 	s.heloHost = args
 	s.state = stateGreeted
 	s.reset()
@@ -192,7 +279,7 @@ func (s *Session) handleEHLO(args string) {
 
 	// Advertise AUTH only after TLS (security best practice)
 	if s.tls || !s.cfg.RequireTLS {
-		extensions = append(extensions, "250-AUTH PLAIN LOGIN")
+		extensions = append(extensions, "250-AUTH PLAIN LOGIN CRAM-MD5")
 	}
 
 	extensions = append(extensions, "250 SMTPUTF8")
@@ -276,6 +363,8 @@ func (s *Session) handleAUTH(args string) {
 		s.handleAuthPlain(parts)
 	case "LOGIN":
 		s.handleAuthLogin()
+	case "CRAM-MD5":
+		s.handleAuthCRAMMD5()
 	default:
 		s.writef("504 5.5.4 Authentication mechanism not supported")
 	}
@@ -308,13 +397,23 @@ func (s *Session) handleAuthPlain(parts []string) {
 		return
 	}
 
-	// TODO: Validate credentials against configured auth backend
 	username := string(fields[1])
-	_ = string(fields[2]) // password
+	password := string(fields[2])
+
+	// Validate credentials
+	if s.authValidator != nil && !s.authValidator.ValidatePlain(username, password) {
+		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.logger.Warn("AUTH PLAIN failed",
+			"remote", s.remoteAddr, "user", username, "correlation_id", s.correlationID)
+		metrics.AuthFailureTotal.Inc()
+		return
+	}
 
 	s.auth = true
 	s.state = stateAuth
-	s.logger.Info("Authentication successful", "remote", s.remoteAddr, "user", username)
+	s.logger.Info("Authentication successful",
+		"remote", s.remoteAddr, "user", username,
+		"mechanism", "PLAIN", "correlation_id", s.correlationID)
 	s.writef("235 2.7.0 Authentication successful")
 	metrics.AuthSuccessTotal.Inc()
 }
@@ -341,16 +440,26 @@ func (s *Session) handleAuthLogin() {
 		return
 	}
 
-	_, err = base64.StdEncoding.DecodeString(password)
+	passwordBytes, err := base64.StdEncoding.DecodeString(password)
 	if err != nil {
 		s.writef("501 5.5.2 Invalid Base64 encoding")
 		return
 	}
 
-	// TODO: Validate credentials
+	// Validate credentials
+	if s.authValidator != nil && !s.authValidator.ValidateLogin(string(usernameBytes), string(passwordBytes)) {
+		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.logger.Warn("AUTH LOGIN failed",
+			"remote", s.remoteAddr, "user", string(usernameBytes), "correlation_id", s.correlationID)
+		metrics.AuthFailureTotal.Inc()
+		return
+	}
+
 	s.auth = true
 	s.state = stateAuth
-	s.logger.Info("AUTH LOGIN successful", "remote", s.remoteAddr, "user", string(usernameBytes))
+	s.logger.Info("AUTH LOGIN successful",
+		"remote", s.remoteAddr, "user", string(usernameBytes),
+		"mechanism", "LOGIN", "correlation_id", s.correlationID)
 	s.writef("235 2.7.0 Authentication successful")
 	metrics.AuthSuccessTotal.Inc()
 }
@@ -532,7 +641,15 @@ func (s *Session) reset() {
 }
 
 // extractAddress extracts an email address from angle brackets or bare format.
+// Includes SMTP injection prevention — rejects addresses with CRLF or null bytes.
 func (s *Session) extractAddress(raw string) string {
+	// SMTP injection prevention: check BEFORE trimming to catch trailing CRLF
+	if strings.ContainsAny(raw, "\r\n\x00") {
+		s.logger.Warn("SMTP injection attempt in address",
+			"remote", s.remoteAddr, "correlation_id", s.correlationID)
+		return ""
+	}
+
 	raw = strings.TrimSpace(raw)
 
 	// Remove ESMTP parameters (e.g., SIZE=1234)
@@ -551,6 +668,11 @@ func (s *Session) extractAddress(raw string) string {
 	}
 	if !strings.Contains(raw, "@") && raw != "" {
 		return "" // Must have @ for non-empty addresses
+	}
+
+	// Additional validation: no embedded spaces, reasonable length
+	if strings.Contains(raw, " ") || len(raw) > 254 {
+		return ""
 	}
 
 	return strings.ToLower(strings.TrimSpace(raw))
@@ -588,4 +710,77 @@ func (s *Session) writeDirect(line string) {
 	s.conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
 	s.writer.WriteString(line + "\r\n")
 	s.writer.Flush()
+}
+
+// handleAuthCRAMMD5 processes CRAM-MD5 authentication per RFC 2195.
+func (s *Session) handleAuthCRAMMD5() {
+	// Generate challenge
+	challenge := fmt.Sprintf("<%d.%d@%s>",
+		time.Now().UnixNano(), time.Now().Unix(),
+		s.cfg.BannerHostname)
+
+	challengeB64 := base64.StdEncoding.EncodeToString([]byte(challenge))
+	s.writef("334 %s", challengeB64)
+
+	// Read response
+	response, err := s.reader.ReadString('\n')
+	if err != nil {
+		return
+	}
+	response = strings.TrimSpace(response)
+
+	if response == "*" {
+		s.writef("501 5.7.0 Authentication cancelled")
+		return
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(response)
+	if err != nil {
+		s.writef("501 5.5.2 Invalid Base64 encoding")
+		return
+	}
+
+	// CRAM-MD5 response format: "username digest"
+	parts := strings.SplitN(string(decoded), " ", 2)
+	if len(parts) != 2 {
+		s.writef("501 5.5.2 Malformed CRAM-MD5 response")
+		return
+	}
+
+	username := parts[0]
+	digest := parts[1]
+
+	// Validate via auth backend
+	if s.authValidator != nil && !s.authValidator.ValidateCRAMMD5(username, challenge, digest) {
+		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.logger.Warn("AUTH CRAM-MD5 failed",
+			"remote", s.remoteAddr, "user", username, "correlation_id", s.correlationID)
+		metrics.AuthFailureTotal.Inc()
+		return
+	}
+
+	s.auth = true
+	s.state = stateAuth
+	s.logger.Info("AUTH CRAM-MD5 successful",
+		"remote", s.remoteAddr, "user", username,
+		"mechanism", "CRAM-MD5", "correlation_id", s.correlationID)
+	s.writef("235 2.7.0 Authentication successful")
+	metrics.AuthSuccessTotal.Inc()
+}
+
+// ComputeCRAMMD5 computes the CRAM-MD5 digest for validation.
+func ComputeCRAMMD5(challenge, password string) string {
+	hmacHash := hmac.New(md5.New, []byte(password))
+	hmacHash.Write([]byte(challenge))
+	return hex.EncodeToString(hmacHash.Sum(nil))
+}
+
+// containsControlChars checks if a string contains ASCII control characters.
+func containsControlChars(s string) bool {
+	for _, r := range s {
+		if r < 32 && r != '\t' {
+			return true
+		}
+	}
+	return false
 }

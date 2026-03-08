@@ -37,7 +37,7 @@ type BounceRecord struct {
 // Classifier classifies SMTP bounce responses and manages suppression.
 type Classifier struct {
 	cfg         config.BounceConfig
-	pg          *store.PostgresStore
+	db          store.Database
 	logger      *logging.Logger
 	suppressed  map[string]time.Time // email -> suppression time
 	senderStats map[string]*SenderStats
@@ -57,10 +57,10 @@ type SenderStats struct {
 }
 
 // NewClassifier creates a new bounce classifier.
-func NewClassifier(cfg config.BounceConfig, pg *store.PostgresStore, logger *logging.Logger) *Classifier {
+func NewClassifier(cfg config.BounceConfig, db store.Database, logger *logging.Logger) *Classifier {
 	return &Classifier{
 		cfg:         cfg,
-		pg:          pg,
+		db:          db,
 		logger:      logger,
 		suppressed:  make(map[string]time.Time),
 		senderStats: make(map[string]*SenderStats),
@@ -90,8 +90,8 @@ func (c *Classifier) ClassifyAndRecord(messageID, sender, recipient string, code
 	c.updateSenderStats(sender, bounceType)
 
 	// Persist to database
-	if c.pg != nil {
-		c.pg.RecordBounce(record)
+	if c.db != nil {
+		c.db.RecordBounce(record)
 	}
 
 	c.logger.Info("Bounce classified",

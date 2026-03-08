@@ -33,10 +33,11 @@ type DeliveryResult struct {
 
 // Client is the outbound SMTP client with connection pooling.
 type Client struct {
-	cfg    config.DeliveryConfig
-	logger *logging.Logger
-	pools  map[string]*connPool // keyed by MX host
-	mu     sync.RWMutex
+	cfg      config.DeliveryConfig
+	hostname string
+	logger   *logging.Logger
+	pools    map[string]*connPool // keyed by MX host
+	mu       sync.RWMutex
 }
 
 // connPool manages a pool of connections to a specific MX host.
@@ -59,11 +60,15 @@ type smtpConn struct {
 }
 
 // NewClient creates a new outbound SMTP client.
-func NewClient(cfg config.DeliveryConfig, logger *logging.Logger) *Client {
+func NewClient(cfg config.DeliveryConfig, hostname string, logger *logging.Logger) *Client {
+	if hostname == "" {
+		hostname = "srmta.local"
+	}
 	return &Client{
-		cfg:    cfg,
-		logger: logger,
-		pools:  make(map[string]*connPool),
+		cfg:      cfg,
+		hostname: hostname,
+		logger:   logger,
+		pools:    make(map[string]*connPool),
 	}
 }
 
@@ -166,7 +171,7 @@ func (c *Client) dial(mxHost string, localIP string) (*smtpConn, error) {
 	}
 
 	// Send EHLO
-	hostname := "srmta.local" // TODO: use configured hostname
+	hostname := c.hostname
 	code, _, err = sc.command("EHLO %s", hostname)
 	if err != nil || code != 250 {
 		// Fall back to HELO

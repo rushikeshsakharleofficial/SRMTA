@@ -59,12 +59,14 @@ func main() {
 	metrics.Register()
 
 	// ── Initialize Data Stores ──────────────────────────────────────────
-	pgStore, err := store.NewPostgresStore(cfg.Database)
+	dbStore, err := store.NewDatabase(cfg.Database)
 	if err != nil {
-		logger.Warn("PostgreSQL not available — event logging disabled", "error", err)
+		logger.Warn("Database not available — event logging disabled",
+			"driver", cfg.Database.Driver, "error", err)
 	}
-	if pgStore != nil {
-		defer pgStore.Close()
+	if dbStore != nil {
+		logger.Info("Database initialized", "driver", dbStore.Driver())
+		defer dbStore.Close()
 	}
 
 	redisStore, err := store.NewRedisStore(cfg.Redis)
@@ -88,10 +90,10 @@ func main() {
 	}
 
 	// ── Initialize Bounce Classifier ────────────────────────────────────
-	bounceClassifier := bounce.NewClassifier(cfg.Bounce, pgStore, logger)
+	bounceClassifier := bounce.NewClassifier(cfg.Bounce, dbStore, logger)
 
 	// ── Initialize Queue Manager ────────────────────────────────────────
-	queueManager, err := queue.NewManager(cfg.Queue, redisStore, pgStore, logger)
+	queueManager, err := queue.NewManager(cfg.Queue, redisStore, dbStore, logger)
 	if err != nil {
 		logger.Error("Failed to initialize queue manager", "error", err)
 		os.Exit(1)
@@ -100,12 +102,13 @@ func main() {
 	// ── Initialize Delivery Engine ──────────────────────────────────────
 	deliveryEngine := delivery.NewEngine(
 		cfg.Delivery,
+		cfg.Server.Hostname,
 		queueManager,
 		dnsResolver,
 		ipPool,
 		dkimSigner,
 		bounceClassifier,
-		pgStore,
+		dbStore,
 		logger,
 	)
 

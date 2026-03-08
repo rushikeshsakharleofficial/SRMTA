@@ -4,12 +4,15 @@
 # Use environment variables for secrets in production
 
 database:
+  # Driver: "postgres" (default) or "mysql" (for MySQL/MariaDB)
+  driver: "${DB_DRIVER:postgres}"
   host: "${DB_HOST:localhost}"
-  port: 5432
+  port: 5432                      # PostgreSQL: 5432, MySQL: 3306
   user: "${DB_USER:srmta}"
   password: "${DB_PASSWORD:changeme}"
   dbname: "${DB_NAME:srmta}"
-  ssl_mode: "prefer"
+  ssl_mode: "prefer"              # PG: disable/require/verify-full; MySQL: true/false/skip-verify
+  charset: "utf8mb4"              # MySQL only — ignored for PostgreSQL
   max_open_conns: 25
   max_idle_conns: 5
 

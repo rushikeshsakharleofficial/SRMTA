@@ -20,23 +20,25 @@ import (
 
 // Server is the inbound SMTP server.
 type Server struct {
-	cfg       config.SMTPConfig
-	tlsCfg    *tls.Config
-	listener  net.Listener
-	queue     *queue.Manager
-	logger    *logging.Logger
-	sessions  sync.WaitGroup
-	connCount int64 // atomic
-	stopping  int32 // atomic, 1 = stopping
-	mu        sync.Mutex
+	cfg         config.SMTPConfig
+	tlsCfg      *tls.Config
+	listener    net.Listener
+	queue       *queue.Manager
+	logger      *logging.Logger
+	rateLimiter *RateLimiter
+	sessions    sync.WaitGroup
+	connCount   int64 // atomic
+	stopping    int32 // atomic, 1 = stopping
+	mu          sync.Mutex
 }
 
 // NewServer creates a new SMTP server instance.
 func NewServer(cfg config.SMTPConfig, tlsCfgData config.TLSConfig, q *queue.Manager, logger *logging.Logger) *Server {
 	s := &Server{
-		cfg:    cfg,
-		queue:  q,
-		logger: logger,
+		cfg:         cfg,
+		queue:       q,
+		logger:      logger,
+		rateLimiter: NewRateLimiter(cfg.MaxConnections, 1*time.Minute),
 	}
 
 	// Configure TLS if cert/key provided
@@ -134,7 +136,7 @@ func (s *Server) Start(ctx context.Context) error {
 				metrics.ConnectionsActive.Set(float64(atomic.LoadInt64(&s.connCount)))
 			}()
 
-			session := NewSession(conn, s.cfg, s.tlsCfg, s.queue, s.logger)
+			session := NewSession(conn, s.cfg, s.tlsCfg, s.queue, s.logger, s.rateLimiter)
 			session.Handle(ctx)
 		}()
 	}

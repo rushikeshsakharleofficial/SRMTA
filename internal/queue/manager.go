@@ -59,7 +59,7 @@ type Message struct {
 type Manager struct {
 	cfg        config.QueueConfig
 	redis      *store.RedisStore
-	pg         *store.PostgresStore
+	db         store.Database
 	logger     *logging.Logger
 	retryIntvl []time.Duration
 	spoolDirs  map[SpoolType]string
@@ -69,7 +69,7 @@ type Manager struct {
 }
 
 // NewManager creates a new queue manager and initializes spool directories.
-func NewManager(cfg config.QueueConfig, redis *store.RedisStore, pg *store.PostgresStore, logger *logging.Logger) (*Manager, error) {
+func NewManager(cfg config.QueueConfig, redis *store.RedisStore, db store.Database, logger *logging.Logger) (*Manager, error) {
 	// Parse retry intervals
 	intervals, err := cfg.ParseRetryIntervals()
 	if err != nil {
@@ -79,7 +79,7 @@ func NewManager(cfg config.QueueConfig, redis *store.RedisStore, pg *store.Postg
 	m := &Manager{
 		cfg:        cfg,
 		redis:      redis,
-		pg:         pg,
+		db:         db,
 		logger:     logger,
 		retryIntvl: intervals,
 		spoolDirs:  make(map[SpoolType]string),

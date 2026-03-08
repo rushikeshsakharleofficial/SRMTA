@@ -22,39 +22,44 @@ import (
 // Engine is the delivery worker pool that processes the active queue.
 type Engine struct {
 	cfg        config.DeliveryConfig
+	hostname   string
 	queue      *queue.Manager
 	dns        *dns.Resolver
 	ipPool     *ip.Pool
 	dkimSigner *dkim.Signer
 	bouncer    *bounce.Classifier
-	pg         *store.PostgresStore
+	db         store.Database
 	logger     *logging.Logger
 	client     *smtp.Client
 	scheduler  *queue.Scheduler
+	circuitBrk *CircuitBreakerManager
 }
 
 // NewEngine creates a new delivery engine.
 func NewEngine(
 	cfg config.DeliveryConfig,
+	hostname string,
 	q *queue.Manager,
 	dnsResolver *dns.Resolver,
 	ipPool *ip.Pool,
 	dkimSigner *dkim.Signer,
 	bouncer *bounce.Classifier,
-	pg *store.PostgresStore,
+	db store.Database,
 	logger *logging.Logger,
 ) *Engine {
 	return &Engine{
 		cfg:        cfg,
+		hostname:   hostname,
 		queue:      q,
 		dns:        dnsResolver,
 		ipPool:     ipPool,
 		dkimSigner: dkimSigner,
 		bouncer:    bouncer,
-		pg:         pg,
+		db:         db,
 		logger:     logger,
-		client:     smtp.NewClient(cfg, logger),
+		client:     smtp.NewClient(cfg, hostname, logger),
 		scheduler:  queue.NewScheduler(cfg.PerDomainConcurrency, 0),
+		circuitBrk: NewCircuitBreakerManager(5, 30*time.Second),
 	}
 }
 
@@ -178,12 +183,21 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 	var lastResult *smtp.DeliveryResult
 
 	for _, mx := range mxRecords {
+		// Check circuit breaker for this MX host
+		if !e.circuitBrk.AllowRequest(mx.Host) {
+			e.logger.Debug("Circuit breaker open, skipping MX",
+				"id", msg.ID, "mx", mx.Host,
+				"state", e.circuitBrk.GetState(mx.Host).String())
+			continue
+		}
+
 		for _, recipient := range msg.Recipients {
 			result, err := e.client.Deliver(mx.Host, selectedIP.Address, msg.Sender, recipient, data)
 			lastResult = result
 
 			if err != nil {
 				lastErr = err
+				e.circuitBrk.RecordFailure(mx.Host)
 				e.logger.Debug("Delivery attempt failed",
 					"id", msg.ID,
 					"mx", mx.Host,
@@ -195,6 +209,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 
 			if result.Status == "delivered" {
 				// Success!
+				e.circuitBrk.RecordSuccess(mx.Host)
 				duration := time.Since(start)
 				e.logger.Info("Message delivered",
 					"id", msg.ID,
@@ -261,7 +276,7 @@ func (e *Engine) loadMessageData(msg *queue.Message) ([]byte, error) {
 
 // recordEvent logs a delivery event to PostgreSQL.
 func (e *Engine) recordEvent(msg *queue.Message, result *smtp.DeliveryResult, duration time.Duration) {
-	if e.pg == nil {
+	if e.db == nil {
 		return
 	}
 
@@ -280,5 +295,5 @@ func (e *Engine) recordEvent(msg *queue.Message, result *smtp.DeliveryResult, du
 		Status:            result.Status,
 	}
 
-	e.pg.RecordEvent(event)
+	e.db.RecordEvent(event)
 }

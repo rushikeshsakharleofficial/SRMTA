@@ -167,14 +167,16 @@ type MetricsConfig struct {
 	Path       string `yaml:"path"`
 }
 
-// DatabaseConfig holds PostgreSQL connection settings.
+// DatabaseConfig holds connection settings for PostgreSQL or MySQL/MariaDB.
 type DatabaseConfig struct {
+	Driver       string `yaml:"driver"`        // "postgres" or "mysql" (default: postgres)
 	Host         string `yaml:"host"`
 	Port         int    `yaml:"port"`
 	User         string `yaml:"user"`
 	Password     string `yaml:"password"`
 	DBName       string `yaml:"dbname"`
-	SSLMode      string `yaml:"ssl_mode"`
+	SSLMode      string `yaml:"ssl_mode"`      // postgres: disable/require/verify-full; mysql: true/false/skip-verify
+	Charset      string `yaml:"charset"`       // MySQL charset (default: utf8mb4)
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 }
@@ -772,11 +774,42 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
-// DSN returns the PostgreSQL connection string.
+// DSN returns the database connection string for the configured driver.
 func (d *DatabaseConfig) DSN() string {
+	switch d.Driver {
+	case "mysql":
+		return d.mysqlDSN()
+	default: // postgres
+		return d.postgresDSN()
+	}
+}
+
+// postgresDSN returns a PostgreSQL connection string.
+func (d *DatabaseConfig) postgresDSN() string {
+	sslMode := d.SSLMode
+	if sslMode == "" {
+		sslMode = "prefer"
+	}
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		d.Host, d.Port, d.User, d.Password, d.DBName, d.SSLMode,
+		d.Host, d.Port, d.User, d.Password, d.DBName, sslMode,
+	)
+}
+
+// mysqlDSN returns a MySQL/MariaDB connection string.
+// Format: user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=UTC
+func (d *DatabaseConfig) mysqlDSN() string {
+	charset := d.Charset
+	if charset == "" {
+		charset = "utf8mb4"
+	}
+	tlsParam := ""
+	if d.SSLMode != "" && d.SSLMode != "disable" && d.SSLMode != "false" {
+		tlsParam = "&tls=" + d.SSLMode
+	}
+	return fmt.Sprintf(
+		"%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=UTC&timeout=10s&readTimeout=30s&writeTimeout=30s%s",
+		d.User, d.Password, d.Host, d.Port, d.DBName, charset, tlsParam,
 	)
 }
 
@@ -806,3 +839,111 @@ func (q *QueueConfig) ParseRetryIntervals() ([]time.Duration, error) {
 	}
 	return intervals, nil
 }
+
+// Validate checks the configuration for errors and returns a descriptive error
+// if any required values are missing or invalid. Called automatically by Load().
+func (c *Config) Validate() error {
+	var errs []string
+
+	// Server validation
+	if c.Server.Hostname == "" {
+		errs = append(errs, "server.hostname must not be empty")
+	}
+	if c.Server.MaxWorkers < 1 {
+		errs = append(errs, "server.max_workers must be >= 1")
+	}
+	if c.Server.ShutdownGrace < time.Second {
+		errs = append(errs, "server.shutdown_grace must be >= 1s")
+	}
+
+	// SMTP validation
+	if c.SMTP.MaxConnections < 1 {
+		errs = append(errs, "smtp.max_connections must be >= 1")
+	}
+	if c.SMTP.MaxMessageSize < 1024 {
+		errs = append(errs, "smtp.max_message_size must be >= 1024 bytes")
+	}
+	if c.SMTP.MaxRecipients < 1 {
+		errs = append(errs, "smtp.max_recipients must be >= 1")
+	}
+
+	// TLS validation — cert and key must both be set, or both empty
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		errs = append(errs, "tls.cert_file and tls.key_file must both be set or both empty")
+	}
+	if c.TLS.CertFile != "" {
+		if _, err := os.Stat(c.TLS.CertFile); err != nil {
+			errs = append(errs, fmt.Sprintf("tls.cert_file not found: %s", c.TLS.CertFile))
+		}
+	}
+	if c.TLS.KeyFile != "" {
+		if _, err := os.Stat(c.TLS.KeyFile); err != nil {
+			errs = append(errs, fmt.Sprintf("tls.key_file not found: %s", c.TLS.KeyFile))
+		}
+	}
+	if c.TLS.MinVersion != "" && c.TLS.MinVersion != "1.2" && c.TLS.MinVersion != "1.3" {
+		errs = append(errs, "tls.min_version must be '1.2' or '1.3'")
+	}
+
+	// Queue validation
+	if c.Queue.MaxRetries < 0 {
+		errs = append(errs, "queue.max_retries must be >= 0")
+	}
+	if c.Queue.ShardCount < 1 {
+		errs = append(errs, "queue.shard_count must be >= 1")
+	}
+
+	// Retry intervals validation
+	if len(c.Queue.RetryIntervals) > 0 {
+		if _, err := c.Queue.ParseRetryIntervals(); err != nil {
+			errs = append(errs, fmt.Sprintf("queue.retry_intervals: %v", err))
+		}
+	}
+
+	// Rate limit validation
+	if c.RateLimit.GlobalRate < 0 {
+		errs = append(errs, "rate_limit.global_rate must be >= 0")
+	}
+	if c.RateLimit.PerDomainRate < 0 {
+		errs = append(errs, "rate_limit.per_domain_rate must be >= 0")
+	}
+	if c.RateLimit.PerSenderRate < 0 {
+		errs = append(errs, "rate_limit.per_sender_rate must be >= 0")
+	}
+
+	// Delivery validation
+	if c.Delivery.MaxConcurrent < 1 {
+		errs = append(errs, "delivery.max_concurrent must be >= 1")
+	}
+	if c.Delivery.PerDomainConcurrency < 1 {
+		errs = append(errs, "delivery.per_domain_concurrency must be >= 1")
+	}
+
+	// Database — if host is set, verify user and dbname are also set
+	if c.Database.Host != "" {
+		if c.Database.User == "" {
+			errs = append(errs, "database.user required when database.host is set")
+		}
+		if c.Database.DBName == "" {
+			errs = append(errs, "database.dbname required when database.host is set")
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration validation failed:\n  - %s", joinStrings(errs, "\n  - "))
+	}
+	return nil
+}
+
+// joinStrings joins a slice of strings with a separator.
+func joinStrings(strs []string, sep string) string {
+	result := ""
+	for i, s := range strs {
+		if i > 0 {
+			result += sep
+		}
+		result += s
+	}
+	return result
+}
+
