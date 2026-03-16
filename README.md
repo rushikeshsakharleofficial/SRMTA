@@ -73,14 +73,14 @@ sudo make install
 
 ```bash
 make rpm
-sudo rpm -ivh rpmbuild/RPMS/x86_64/srmta-1.0.0-1.el9.x86_64.rpm
+sudo rpm -ivh rpmbuild/RPMS/x86_64/srmta-1.1.0-1.el9.x86_64.rpm
 ```
 
 ### Install from DEB (Debian/Ubuntu)
 
 ```bash
 make deb
-sudo dpkg -i debbuild/srmta_1.0.0-1_amd64.deb
+sudo dpkg -i debbuild/srmta_1.1.0-1_amd64.deb
 sudo apt-get install -f  # resolve dependencies
 ```
 

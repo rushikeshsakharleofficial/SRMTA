@@ -1,7 +1,7 @@
 # SRMTA Build Makefile
 # Build, package, and install targets for RPM and DEB distributions
 
-VERSION    ?= 1.0.0
+VERSION    ?= 1.1.0
 BUILD_TIME := $(shell date -u +%Y%m%d%H%M%S)
 GIT_COMMIT := $(shell git describe --tags --always 2>/dev/null || echo "dev")
 LDFLAGS    := -s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME) -X main.gitCommit=$(GIT_COMMIT)

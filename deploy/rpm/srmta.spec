@@ -104,22 +104,27 @@ chown -R %{_name}:%{_name} %{_localstatedir}/log/%{_name}
 chown -R root:%{_name} %{_sysconfdir}/%{_name}
 
 echo ""
-echo "╔══════════════════════════════════════════════════╗"
-echo "║  SRMTA installed successfully                    ║"
-echo "║                                                  ║"
-echo "║  Config:  /etc/srmta/config.yaml                 ║"
-echo "║  Sub-cfg: /etc/srmta/config.d/*.yaml             ║"
-echo "║  Secrets: /etc/srmta/srmta.env                   ║"
-echo "║  Spool:   /var/spool/srmta/                      ║"
-echo "║  Logs:    /var/log/srmta/                         ║"
-echo "║                                                  ║"
-echo "║  Enable and start:                               ║"
-echo "║    systemctl enable --now srmta.socket            ║"
-echo "║    systemctl enable --now srmta.service           ║"
-echo "║                                                  ║"
-echo "║  Apply database schema:                          ║"
+echo "╔═══════════════════════════════════════════════════════════════╗"
+echo "║  SRMTA v1.1.0 installed successfully                        ║"
+echo "║                                                              ║"
+echo "║  IMPORTANT: Set required secrets before starting:            ║"
+echo "║    sudo vim /etc/srmta/srmta.env                             ║"
+echo "║    -> JWT_SECRET, WEBHOOK_SECRET, DB_PASSWORD, REDIS_PASSWORD║"
+echo "║    -> Generate with: openssl rand -hex 32                    ║"
+echo "║                                                              ║"
+echo "║  Config:  /etc/srmta/config.yaml                             ║"
+echo "║  Sub-cfg: /etc/srmta/config.d/*.yaml                        ║"
+echo "║  Secrets: /etc/srmta/srmta.env                               ║"
+echo "║  Spool:   /var/spool/srmta/                                  ║"
+echo "║  Logs:    /var/log/srmta/                                    ║"
+echo "║                                                              ║"
+echo "║  Enable and start:                                           ║"
+echo "║    systemctl enable --now srmta.socket                       ║"
+echo "║    systemctl enable --now srmta.service                      ║"
+echo "║                                                              ║"
+echo "║  Apply database schema:                                      ║"
 echo "║    psql -U srmta -f /usr/share/srmta/migrations/init_postgres.sql ║"
-echo "╚══════════════════════════════════════════════════╝"
+echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
 
 %preun
@@ -145,6 +150,26 @@ echo ""
 %{_datadir}/%{_name}/migrations/
 
 %changelog
+* Mon Mar 16 2026 SRMTA Team <team@srmta.io> - 1.1.0-1
+- Security: remove hardcoded admin/admin credentials, require DB-backed bcrypt auth
+- Security: remove default JWT secret fallback, app refuses to start without JWT_SECRET
+- Security: remove hardcoded DB passwords from source and configs
+- Security: default SMTP auth validator now rejects all credentials
+- Security: CORS restricted to explicit origin allowlist (was wildcard)
+- Security: WebSocket endpoint requires JWT authentication
+- Security: webhook uses separate WEBHOOK_SECRET with constant-time HMAC comparison
+- Security: STARTTLS handshake failure aborts connection (no plaintext fallback)
+- Security: database SSL mode defaults to "require" instead of "prefer"
+- Security: message IDs use crypto.randomUUID() / crypto/rand
+- Security: JWT expiry reduced from 24h to 30m
+- Security: bulk send capped at 1000 messages per batch
+- Security: URL-encode unsubscribe link parameters
+- Security: add 1MB request body limit on webhook handler
+- Fix: dashboard uses relative URLs and wss:// for WebSocket
+- Fix: CSV export uses fetch with auth header instead of window.open
+- Fix: log export limit capped at 50000, pagination bounds-checked
+- Fix: health endpoint no longer leaks process uptime
+
 * Sat Feb 22 2026 SRMTA Team <team@srmta.io> - 1.0.0-1
 - Initial release
 - Go SMTP engine with ESMTP, STARTTLS, AUTH, pipelining
