@@ -49,13 +49,13 @@ type AuthValidator interface {
 	ValidateCRAMMD5(username, challenge, response string) bool
 }
 
-// defaultAuthValidator accepts all credentials (for development only).
+// defaultAuthValidator rejects all credentials — a real AuthValidator must be injected.
 type defaultAuthValidator struct{}
 
-func (d *defaultAuthValidator) ValidatePlain(username, password string) bool { return true }
-func (d *defaultAuthValidator) ValidateLogin(username, password string) bool { return true }
+func (d *defaultAuthValidator) ValidatePlain(username, password string) bool { return false }
+func (d *defaultAuthValidator) ValidateLogin(username, password string) bool { return false }
 func (d *defaultAuthValidator) ValidateCRAMMD5(username, challenge, resp string) bool {
-	return true
+	return false
 }
 
 // Session handles a single SMTP connection.
@@ -789,6 +789,8 @@ func (s *Session) handleAuthCRAMMD5() {
 }
 
 // ComputeCRAMMD5 computes the CRAM-MD5 digest for validation.
+// Note: CRAM-MD5 uses HMAC-MD5 per RFC 2195. MD5 is weak but required by the protocol.
+// Consider deprecating CRAM-MD5 in favor of PLAIN over TLS.
 func ComputeCRAMMD5(challenge, password string) string {
 	hmacHash := hmac.New(md5.New, []byte(password))
 	hmacHash.Write([]byte(challenge))

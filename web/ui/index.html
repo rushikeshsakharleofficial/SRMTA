@@ -354,7 +354,7 @@
 
   <script>
     // ── Configuration ───────────────────────────────────────────────────
-    const API_BASE = 'http://localhost:3000';
+    const API_BASE = window.location.origin;
     let ws = null;
 
     // ── Simulated Data (replace with real API calls) ─────────────────
@@ -516,7 +516,8 @@
     // ── WebSocket Connection ────────────────────────────────────────────
     function connectWebSocket() {
       try {
-        ws = new WebSocket('ws://localhost:3000/ws');
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
         ws.onopen = () => console.log('WebSocket connected');
         ws.onmessage = (e) => {
           const data = JSON.parse(e.data);
@@ -531,7 +532,20 @@
 
     // ── Export ─────────────────────────────────────────────────────────
     function exportCSV() {
-      window.open(API_BASE + '/api/logs/export?limit=10000', '_blank');
+      const token = localStorage.getItem('srmta_token');
+      fetch(API_BASE + '/api/logs/export?limit=10000', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      })
+      .then(res => res.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `srmta-logs-${Date.now()}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(err => console.error('Export failed:', err));
     }
 
     function sendTestEmail() {

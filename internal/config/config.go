@@ -758,7 +758,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Database.Port = 5432
 	}
 	if cfg.Database.SSLMode == "" {
-		cfg.Database.SSLMode = "prefer"
+		cfg.Database.SSLMode = "require"
 	}
 	if cfg.Database.MaxOpenConns == 0 {
 		cfg.Database.MaxOpenConns = 25

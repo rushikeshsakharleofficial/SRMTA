@@ -196,19 +196,20 @@ func (c *Client) dial(mxHost string, localIP string) (*smtpConn, error) {
 			MinVersion: tls.VersionTLS12,
 		})
 		if err := tlsConn.Handshake(); err != nil {
-			c.logger.Warn("STARTTLS handshake failed, continuing plain",
+			c.logger.Error("STARTTLS handshake failed, aborting connection",
 				"host", mxHost, "error", err)
 			metrics.TLSHandshakeErrors.Inc()
-		} else {
-			sc.conn = tlsConn
-			sc.reader = bufio.NewReader(tlsConn)
-			sc.writer = bufio.NewWriter(tlsConn)
-			sc.tls = true
-
-			// Re-EHLO after TLS
-			sc.command("EHLO %s", hostname)
-			metrics.TLSConnectionsTotal.Inc()
+			netConn.Close()
+			return nil, fmt.Errorf("STARTTLS handshake with %s failed: %w", mxHost, err)
 		}
+		sc.conn = tlsConn
+		sc.reader = bufio.NewReader(tlsConn)
+		sc.writer = bufio.NewWriter(tlsConn)
+		sc.tls = true
+
+		// Re-EHLO after TLS
+		sc.command("EHLO %s", hostname)
+		metrics.TLSConnectionsTotal.Inc()
 	}
 
 	return sc, nil

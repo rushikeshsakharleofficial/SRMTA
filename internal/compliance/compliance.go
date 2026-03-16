@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ func (f *FeedbackLoop) WebhookHandler() http.HandlerFunc {
 		}
 
 		var complaint Complaint
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 		if err := json.NewDecoder(r.Body).Decode(&complaint); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
@@ -87,9 +89,9 @@ func NewUnsubscribe(baseURL, secret string) *Unsubscribe {
 // GenerateHeaders returns the List-Unsubscribe and List-Unsubscribe-Post headers.
 // Compliant with RFC 2369 (mailto + https) and RFC 8058 (one-click).
 func (u *Unsubscribe) GenerateHeaders(messageID, recipient string) map[string]string {
-	// Generate unique unsubscribe URL
+	// Generate unique unsubscribe URL with properly encoded parameters
 	unsub := fmt.Sprintf("%s/unsubscribe?id=%s&email=%s",
-		u.BaseURL, messageID, recipient)
+		u.BaseURL, url.QueryEscape(messageID), url.QueryEscape(recipient))
 
 	return map[string]string{
 		"List-Unsubscribe":      fmt.Sprintf("<%s>, <mailto:unsubscribe@%s?subject=unsubscribe>", unsub, extractDomainFromURL(u.BaseURL)),

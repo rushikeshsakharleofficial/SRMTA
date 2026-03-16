@@ -5,6 +5,7 @@ package queue
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -555,11 +556,16 @@ func (m *Manager) scanForExpired() {
 	}
 }
 
-// generateMessageID creates a unique message ID.
+// generateMessageID creates a unique message ID with cryptographic randomness.
 func (m *Manager) generateMessageID() string {
 	now := time.Now()
-	hash := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", now.UnixNano(), now.UnixMicro())))
-	return fmt.Sprintf("%s-%s", now.Format("20060102150405"), hex.EncodeToString(hash[:8]))
+	randBytes := make([]byte, 16)
+	if _, err := crand.Read(randBytes); err != nil {
+		// Fallback: use timestamp + sha256 (less secure but functional)
+		hash := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", now.UnixNano(), now.UnixMicro())))
+		return fmt.Sprintf("%s-%s", now.Format("20060102150405"), hex.EncodeToString(hash[:8]))
+	}
+	return fmt.Sprintf("%s-%s", now.Format("20060102150405"), hex.EncodeToString(randBytes))
 }
 
 // extractDomain returns the domain part of an email address.

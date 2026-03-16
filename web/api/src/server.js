@@ -7,15 +7,31 @@
 const fastify = require('fastify')({ logger: true });
 
 // ── Configuration ─────────────────────────────────────────────────────────
+// Fail fast if critical secrets are not configured
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is required');
+  process.exit(1);
+}
+if (!process.env.DB_PASSWORD) {
+  console.error('FATAL: DB_PASSWORD environment variable is required');
+  process.exit(1);
+}
+if (!process.env.WEBHOOK_SECRET) {
+  console.error('FATAL: WEBHOOK_SECRET environment variable is required (separate from JWT_SECRET)');
+  process.exit(1);
+}
+
 const config = {
   port: parseInt(process.env.API_PORT || '3000'),
   host: process.env.API_HOST || '0.0.0.0',
-  jwtSecret: process.env.JWT_SECRET || 'change-me-in-production',
+  jwtSecret: process.env.JWT_SECRET,
+  webhookSecret: process.env.WEBHOOK_SECRET,
+  allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean),
   db: {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
     user: process.env.DB_USER || 'srmta',
-    password: process.env.DB_PASSWORD || 'srmta_secret',
+    password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'srmta',
   },
   redis: {
@@ -25,16 +41,16 @@ const config = {
 
 // ── Register Plugins ──────────────────────────────────────────────────────
 async function registerPlugins() {
-  // CORS
+  // CORS — restrict to explicit origins
   await fastify.register(require('@fastify/cors'), {
-    origin: true,
+    origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : false,
     credentials: true,
   });
 
   // JWT Authentication
   await fastify.register(require('@fastify/jwt'), {
     secret: config.jwtSecret,
-    sign: { expiresIn: '24h' },
+    sign: { expiresIn: '30m' },
   });
 
   // Rate Limiting
@@ -73,31 +89,45 @@ function healthRoutes() {
     status: 'healthy',
     service: 'srmta-api',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
   }));
 }
 
 // ── Auth Routes ───────────────────────────────────────────────────────────
 function authRoutes() {
-  // POST /api/auth/login
-  fastify.post('/api/auth/login', async (request, reply) => {
+  // POST /api/auth/login — stricter rate limit for login
+  fastify.post('/api/auth/login', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
     const { username, password } = request.body || {};
     if (!username || !password) {
       return reply.code(400).send({ error: 'Username and password required' });
     }
 
-    // TODO: Validate against database
-    // For now, accept admin/admin for development
-    if (username === 'admin' && password === 'admin') {
+    // Validate against database
+    const bcrypt = require('bcryptjs');
+    try {
+      // TODO: Replace with actual DB query using config.db pool
+      // const result = await db.query('SELECT id, username, password_hash, role FROM api_users WHERE username = $1', [username]);
+      // const user = result.rows[0];
+      // For now, reject all logins until DB auth is configured
+      const user = null;
+      if (!user) {
+        return reply.code(401).send({ error: 'Invalid credentials' });
+      }
+      const valid = await bcrypt.compare(password, user.password_hash);
+      if (!valid) {
+        return reply.code(401).send({ error: 'Invalid credentials' });
+      }
       const token = fastify.jwt.sign({
-        id: '1',
-        username: 'admin',
-        role: 'admin',
+        id: user.id,
+        username: user.username,
+        role: user.role,
       });
-      return { token, user: { id: '1', username: 'admin', role: 'admin' } };
+      return { token, user: { id: user.id, username: user.username, role: user.role } };
+    } catch (err) {
+      fastify.log.error(err, 'Login error');
+      return reply.code(500).send({ error: 'Internal server error' });
     }
-
-    return reply.code(401).send({ error: 'Invalid credentials' });
   });
 
   // GET /api/auth/me
@@ -116,7 +146,8 @@ function sendRoutes() {
       return reply.code(400).send({ error: 'from, to, and subject are required' });
     }
 
-    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const crypto = require('crypto');
+    const messageId = crypto.randomUUID();
 
     // TODO: Enqueue to SMTP engine via Redis
     return {
@@ -134,9 +165,15 @@ function sendRoutes() {
       return reply.code(400).send({ error: 'messages array is required' });
     }
 
+    const MAX_BULK_SIZE = 1000;
+    if (messages.length > MAX_BULK_SIZE) {
+      return reply.code(400).send({ error: `Maximum ${MAX_BULK_SIZE} messages per batch` });
+    }
+
+    const crypto = require('crypto');
     const results = messages.map((msg, idx) => ({
       index: idx,
-      message_id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`,
+      message_id: crypto.randomUUID(),
       status: 'queued',
     }));
 
@@ -151,7 +188,8 @@ function sendRoutes() {
       return reply.code(400).send({ error: 'from, to, subject, and send_at are required' });
     }
 
-    const messageId = `sched-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const crypto = require('crypto');
+    const messageId = `sched-${crypto.randomUUID()}`;
 
     return {
       message_id: messageId,
@@ -229,11 +267,13 @@ function webhookRoutes() {
     const crypto = require('crypto');
     const bodyStr = JSON.stringify(request.body);
     const expectedSig = crypto
-      .createHmac('sha256', config.jwtSecret)
+      .createHmac('sha256', config.webhookSecret)
       .update(bodyStr)
       .digest('hex');
 
-    if (signature !== `sha256=${expectedSig}`) {
+    const expected = Buffer.from(`sha256=${expectedSig}`, 'utf8');
+    const received = Buffer.from(signature, 'utf8');
+    if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
       return reply.code(401).send({ error: 'Invalid webhook signature' });
     }
 
@@ -249,7 +289,8 @@ function webhookRoutes() {
 function logRoutes() {
   // GET /api/logs/export
   fastify.get('/api/logs/export', { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    const { from, to, status, sender, limit } = request.query;
+    const { from, to, status, sender } = request.query;
+    const limit = Math.min(parseInt(request.query.limit) || 10000, 50000);
 
     // TODO: Query PostgreSQL for delivery events and stream as CSV
     reply.header('Content-Type', 'text/csv');
@@ -260,14 +301,16 @@ function logRoutes() {
 
   // GET /api/logs — Paginated log viewer
   fastify.get('/api/logs', { preHandler: [fastify.authenticate] }, async (request) => {
-    const { page = 1, per_page = 50, status, sender, recipient } = request.query;
+    const { status, sender, recipient } = request.query;
+    const page = Math.max(1, parseInt(request.query.page) || 1);
+    const per_page = Math.min(Math.max(1, parseInt(request.query.per_page) || 50), 200);
 
     // TODO: Query PostgreSQL
     return {
       data: [],
       pagination: {
-        page: parseInt(page),
-        per_page: parseInt(per_page),
+        page,
+        per_page,
         total: 0,
         total_pages: 0,
       },
@@ -331,7 +374,7 @@ function domainRoutes() {
 
 // ── WebSocket Live Updates ────────────────────────────────────────────────
 function websocketRoutes() {
-  fastify.get('/ws', { websocket: true }, (socket, request) => {
+  fastify.get('/ws', { websocket: true, preHandler: [fastify.authenticate] }, (socket, request) => {
     socket.on('message', (message) => {
       // Handle subscription requests
       try {
