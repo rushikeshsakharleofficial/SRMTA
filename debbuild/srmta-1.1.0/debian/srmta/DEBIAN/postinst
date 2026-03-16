@@ -1,0 +1,111 @@
+#!/bin/sh
+# SRMTA DEB postinst — runs after package installation
+set -e
+
+case "$1" in
+    configure)
+        # Create srmta system user
+        if ! getent group srmta >/dev/null; then
+            addgroup --system srmta
+        fi
+        if ! getent passwd srmta >/dev/null; then
+            adduser --system --ingroup srmta --home /var/spool/srmta \
+                    --no-create-home --shell /usr/sbin/nologin \
+                    --gecos "SRMTA Mail Transfer Agent" srmta
+        fi
+
+        # Create directories
+        install -d -m 0750 -o srmta -g srmta /var/spool/srmta
+        install -d -m 0750 -o srmta -g srmta /var/log/srmta
+        install -d -m 0750 -o root  -g srmta /etc/srmta/dkim
+
+        # Fix permissions
+        chown -R root:srmta /etc/srmta
+        chmod 0750 /etc/srmta
+        chmod 0640 /etc/srmta/config.yaml
+        chmod 0600 /etc/srmta/srmta.env
+        if [ -d /etc/srmta/config.d ]; then
+            chmod 0750 /etc/srmta/config.d
+            chmod 0640 /etc/srmta/config.d/*.yaml 2>/dev/null || true
+        fi
+
+        # Enable systemd units
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+        fi
+
+        echo ""
+        echo "╔═══════════════════════════════════════════════════════════════╗"
+        echo "║  SRMTA v1.1.0 installed successfully                        ║"
+        echo "║                                                              ║"
+        echo "║  IMPORTANT: Set required secrets before starting:            ║"
+        echo "║    sudo vim /etc/srmta/srmta.env                             ║"
+        echo "║    -> JWT_SECRET, WEBHOOK_SECRET, DB_PASSWORD, REDIS_PASSWORD║"
+        echo "║    -> Generate with: openssl rand -hex 32                    ║"
+        echo "║                                                              ║"
+        echo "║  Config:  /etc/srmta/config.yaml                             ║"
+        echo "║  Sub-cfg: /etc/srmta/config.d/*.yaml                        ║"
+        echo "║  Secrets: /etc/srmta/srmta.env                               ║"
+        echo "║  Spool:   /var/spool/srmta/                                  ║"
+        echo "║  Logs:    /var/log/srmta/                                    ║"
+        echo "║                                                              ║"
+        echo "║  Enable and start:                                           ║"
+        echo "║    systemctl enable --now srmta.socket                       ║"
+        echo "║    systemctl enable --now srmta.service                      ║"
+        echo "║                                                              ║"
+        echo "║  Apply database schema:                                      ║"
+        echo "║    psql -U srmta -f /usr/share/srmta/migrations/init_postgres.sql ║"
+        echo "╚═══════════════════════════════════════════════════════════════╝"
+        echo ""
+        ;;
+esac
+
+# Automatically added by dh_installsystemd/13.31
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	# The following line should be removed in trixie or trixie+1
+	deb-systemd-helper unmask 'srmta.service' >/dev/null || true
+
+	# was-enabled defaults to true, so new installations run enable.
+	if deb-systemd-helper --quiet was-enabled 'srmta.service'; then
+		# Enables the unit on first installation, creates new
+		# symlinks on upgrades if the unit file has changed.
+		deb-systemd-helper enable 'srmta.service' >/dev/null || true
+	else
+		# Update the statefile to add new symlinks (if any), which need to be
+		# cleaned up on purge. Also remove old symlinks.
+		deb-systemd-helper update-state 'srmta.service' >/dev/null || true
+	fi
+fi
+# End automatically added section
+# Automatically added by dh_installsystemd/13.31
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	# The following line should be removed in trixie or trixie+1
+	deb-systemd-helper unmask 'srmta.socket' >/dev/null || true
+
+	# was-enabled defaults to true, so new installations run enable.
+	if deb-systemd-helper --quiet was-enabled 'srmta.socket'; then
+		# Enables the unit on first installation, creates new
+		# symlinks on upgrades if the unit file has changed.
+		deb-systemd-helper enable 'srmta.socket' >/dev/null || true
+	else
+		# Update the statefile to add new symlinks (if any), which need to be
+		# cleaned up on purge. Also remove old symlinks.
+		deb-systemd-helper update-state 'srmta.socket' >/dev/null || true
+	fi
+fi
+# End automatically added section
+# Automatically added by dh_installsystemd/13.31
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+		if [ -n "$2" ]; then
+			_dh_action=restart
+		else
+			_dh_action=start
+		fi
+		deb-systemd-invoke $_dh_action 'srmta.service' 'srmta.socket' >/dev/null || true
+	fi
+fi
+# End automatically added section
+
+exit 0

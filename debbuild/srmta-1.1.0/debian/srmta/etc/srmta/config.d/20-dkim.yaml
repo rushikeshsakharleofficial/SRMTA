@@ -1,0 +1,22 @@
+# SRMTA Sub-Config: DKIM Signing Keys
+# File: config.d/20-dkim.yaml
+# Manages DKIM key configuration separately for easy rotation
+
+dkim:
+  enabled: true
+  default_key: "example.com:default"
+  keys:
+    - selector: "default"
+      domain: "example.com"
+      private_key_path: "/etc/srmta/dkim/example.com.key"
+      algorithm: "rsa-sha256"
+
+    - selector: "selector2"
+      domain: "mail.example.com"
+      private_key_path: "/etc/srmta/dkim/mail.example.com.key"
+      algorithm: "rsa-sha256"
+
+    - selector: "tx2026"
+      domain: "transactional.example.com"
+      private_key_path: "/etc/srmta/dkim/transactional.example.com.key"
+      algorithm: "rsa-sha256"

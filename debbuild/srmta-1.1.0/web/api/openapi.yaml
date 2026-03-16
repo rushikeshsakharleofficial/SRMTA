@@ -1,0 +1,414 @@
+openapi: "3.0.3"
+info:
+  title: SRMTA Admin API
+  description: |
+    REST API for the SRMTA (Scalable RFC-compliant Mail Transfer Agent) platform.
+    Provides endpoints for sending emails, monitoring delivery status, managing
+    queues, IP pools, and system configuration.
+  version: "1.0.0"
+  contact:
+    name: SRMTA Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://srmta.example.com/api
+    description: Production
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/auth/login:
+    post:
+      summary: Authenticate and get JWT token
+      tags: [Authentication]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials
+
+  /api/send:
+    post:
+      summary: Send a single email
+      tags: [Sending]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendRequest"
+      responses:
+        "200":
+          description: Email queued successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendResponse"
+        "400":
+          description: Invalid request
+        "401":
+          description: Unauthorized
+
+  /api/bulk:
+    post:
+      summary: Send bulk emails
+      tags: [Sending]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/SendRequest"
+      responses:
+        "200":
+          description: Bulk emails queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SendResponse"
+
+  /api/schedule:
+    post:
+      summary: Schedule an email for future delivery
+      tags: [Sending]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SendRequest"
+                - type: object
+                  required: [send_at]
+                  properties:
+                    send_at:
+                      type: string
+                      format: date-time
+      responses:
+        "200":
+          description: Email scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendResponse"
+
+  /api/status/{id}:
+    get:
+      summary: Get delivery status of a message
+      tags: [Status]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Message status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageStatus"
+        "404":
+          description: Message not found
+
+  /api/metrics:
+    get:
+      summary: Get system metrics
+      tags: [Monitoring]
+      responses:
+        "200":
+          description: System metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemMetrics"
+
+  /api/webhook:
+    post:
+      summary: Receive delivery status webhook
+      tags: [Webhooks]
+      security: []
+      parameters:
+        - name: x-srmta-signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 signature of the request body
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event_type:
+                  type: string
+                  enum: [delivered, bounced, deferred, complained]
+                data:
+                  type: object
+      responses:
+        "200":
+          description: Webhook received
+        "401":
+          description: Invalid signature
+
+  /api/logs/export:
+    get:
+      summary: Export delivery logs as CSV
+      tags: [Logs]
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [delivered, bounced, deferred, failed]
+        - name: sender
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10000
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /api/logs:
+    get:
+      summary: Query delivery logs (paginated)
+      tags: [Logs]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: sender
+          in: query
+          schema:
+            type: string
+        - name: recipient
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated logs
+
+  /api/queue/stats:
+    get:
+      summary: Get queue statistics
+      tags: [Queue]
+      responses:
+        "200":
+          description: Queue stats per spool
+
+  /api/ips:
+    get:
+      summary: Get IP pool health status
+      tags: [IP Pool]
+      responses:
+        "200":
+          description: IP pool health data
+
+  /api/domains/stats:
+    get:
+      summary: Get per-domain delivery statistics
+      tags: [Domains]
+      responses:
+        "200":
+          description: Domain statistics
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+
+    SendRequest:
+      type: object
+      required: [from, to, subject]
+      properties:
+        from:
+          type: string
+          format: email
+        to:
+          type: string
+          format: email
+        subject:
+          type: string
+        body:
+          type: string
+          description: Plain text body
+        html:
+          type: string
+          description: HTML body
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+
+    SendResponse:
+      type: object
+      properties:
+        message_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, scheduled]
+        queued_at:
+          type: string
+          format: date-time
+        scheduled_at:
+          type: string
+          format: date-time
+
+    MessageStatus:
+      type: object
+      properties:
+        message_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, active, delivered, deferred, bounced, failed]
+        sender:
+          type: string
+        recipient:
+          type: string
+        queued_at:
+          type: string
+          format: date-time
+        delivered_at:
+          type: string
+          format: date-time
+        retry_count:
+          type: integer
+        response_code:
+          type: integer
+        response_text:
+          type: string
+
+    SystemMetrics:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        delivery:
+          type: object
+          properties:
+            total_sent:
+              type: integer
+            delivered:
+              type: integer
+            bounced:
+              type: integer
+            deferred:
+              type: integer
+            failed:
+              type: integer
+            success_rate:
+              type: number
+        queue:
+          type: object
+          properties:
+            incoming:
+              type: integer
+            active:
+              type: integer
+            deferred:
+              type: integer
+            retry:
+              type: integer
+            dead_letter:
+              type: integer
+            failed:
+              type: integer
+        smtp:
+          type: object
+          properties:
+            active_connections:
+              type: integer
+            messages_per_second:
+              type: number
+            avg_latency_ms:
+              type: number

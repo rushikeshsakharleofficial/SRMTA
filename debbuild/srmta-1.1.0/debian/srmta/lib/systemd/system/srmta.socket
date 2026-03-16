@@ -1,0 +1,14 @@
+[Unit]
+Description=SRMTA SMTP Socket Activation
+Documentation=https://github.com/srmta/srmta
+
+[Socket]
+ListenStream=25
+ListenStream=587
+BindIPv6Only=both
+Accept=no
+NoDelay=yes
+ReusePort=yes
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,53 @@
+[Unit]
+Description=SRMTA Mail Transfer Agent
+Documentation=https://github.com/srmta/srmta
+After=network-online.target postgresql.service redis.service
+Wants=network-online.target
+Requires=srmta.socket
+
+[Service]
+Type=simple
+User=srmta
+Group=srmta
+EnvironmentFile=-/etc/srmta/srmta.env
+ExecStart=/usr/sbin/srmta -config /etc/srmta/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Writable paths
+ReadWritePaths=/var/spool/srmta /var/log/srmta
+
+# File descriptor limits for high-volume sending
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Capabilities
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# OOM handling
+OOMScoreAdjust=-900
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=srmta
+
+[Install]
+WantedBy=multi-user.target

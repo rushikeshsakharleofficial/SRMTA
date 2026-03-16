@@ -1,0 +1,34 @@
+srmta (1.1.0-1) stable; urgency=high
+
+  * Security: remove hardcoded admin/admin credentials, require DB-backed bcrypt auth
+  * Security: remove default JWT secret fallback, app refuses to start without JWT_SECRET
+  * Security: remove hardcoded DB passwords from source and configs
+  * Security: default SMTP auth validator now rejects all credentials
+  * Security: CORS restricted to explicit origin allowlist
+  * Security: WebSocket endpoint requires JWT authentication
+  * Security: webhook uses separate WEBHOOK_SECRET with constant-time HMAC comparison
+  * Security: STARTTLS handshake failure aborts connection (no plaintext fallback)
+  * Security: database SSL mode defaults to "require" instead of "prefer"
+  * Security: message IDs use crypto.randomUUID() / crypto/rand
+  * Security: JWT expiry reduced from 24h to 30m
+  * Security: bulk send capped at 1000 messages per batch
+  * Security: URL-encode unsubscribe link parameters
+  * Security: add 1MB request body limit on webhook handler
+  * Fix: dashboard uses relative URLs and wss:// for WebSocket
+  * Fix: CSV export uses fetch with auth header instead of window.open
+  * Fix: log export limit capped at 50000, pagination bounds-checked
+  * Fix: health endpoint no longer leaks process uptime
+
+ -- SRMTA Team <team@linuxhardened.com>  Mon, 16 Mar 2026 10:00:00 +0000
+
+srmta (1.0.0-1) stable; urgency=medium
+
+  * Initial release
+  * Go SMTP engine with ESMTP, STARTTLS, AUTH, pipelining
+  * Multi-spool queue with crash recovery journal
+  * DKIM signing, bounce classification, auto-suppression
+  * IP pool health scoring with warm-up controls
+  * Prometheus metrics exporter
+  * config.d/ sub-config support
+
+ -- SRMTA Team <team@linuxhardened.com>  Sat, 22 Feb 2026 00:00:00 +0000
