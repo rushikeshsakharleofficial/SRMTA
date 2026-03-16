@@ -6,7 +6,7 @@ Production-grade, RFC 5321/5322 compliant MTA built in Go. Designed for high-vol
 
 | Category | Capabilities |
 |---|---|
-| **SMTP Engine** | ESMTP, STARTTLS (TLS 1.2+), AUTH (PLAIN/LOGIN), pipelining (RFC 2920), DSN, separate inbound (:25) and submission (:587) ports |
+| **SMTP Engine** | ESMTP, STARTTLS (TLS 1.2+, mandatory on handshake), AUTH (PLAIN/LOGIN/CRAM-MD5), pipelining (RFC 2920), DSN, separate inbound (:25) and submission (:587) ports |
 | **Queue** | 6 spools (incoming→active→deferred→retry→dead-letter→failed), domain bucketing, sharding, crash-safe WAL journal |
 | **DNS** | Async resolver with in-memory + Redis caching, MX priority, A/AAAA fallback, resolver pool |
 | **IP Pool** | Health scoring (4xx/5xx/timeout/TLS), auto-disable/recovery, warm-up schedules |
@@ -17,9 +17,38 @@ Production-grade, RFC 5321/5322 compliant MTA built in Go. Designed for high-vol
 | **Access Control** | INI-based `allowed_ips.ini` (`[ipv4]`/`[ipv6]`/`[relay]`) and `allowed_domains.ini` (`[domains]`), wildcard domains |
 | **Compliance** | FBL webhook ingestion, List-Unsubscribe (RFC 2369 + RFC 8058), DMARC alignment |
 | **Observability** | Prometheus metrics, structured JSON logging, Grafana dashboard, CSV export |
-| **Admin API** | Node.js Fastify REST API with JWT, RBAC, rate limiting, WebSocket live updates |
+| **Admin API** | Node.js Fastify REST API with JWT (30m expiry), RBAC, per-endpoint rate limiting, authenticated WebSocket live updates |
 | **Dashboard** | Real-time queue charts, IP health view, domain stats, delivery logs |
 | **Config** | Centralized YAML + `config.d/*.yaml` sub-configs, env var interpolation |
+
+## Security
+
+SRMTA enforces security-by-default. The application **will not start** without required secrets configured:
+
+| Requirement | Details |
+|---|---|
+| **JWT_SECRET** | Required. No default fallback. Generate with `openssl rand -hex 32` |
+| **WEBHOOK_SECRET** | Required. Separate from JWT secret. Used for HMAC-SHA256 webhook verification with constant-time comparison |
+| **DB_PASSWORD** | Required. No hardcoded defaults in source or config |
+| **CORS** | Explicit origin allowlist via `ALLOWED_ORIGINS` env var (no wildcard) |
+| **Auth** | Database-backed bcrypt authentication. No default credentials |
+| **SMTP Auth** | Default validator rejects all — you must inject a real `AuthValidator` implementation |
+| **TLS** | STARTTLS handshake failures abort the connection (no plaintext fallback). DB connections default to `ssl_mode: require` |
+| **WebSocket** | Requires JWT authentication |
+| **Rate Limiting** | Global (100/min) + stricter per-endpoint (login: 10/min) |
+| **Message IDs** | Generated with `crypto.randomUUID()` / `crypto/rand` (not `Math.random`) |
+| **Bulk Send** | Capped at 1,000 messages per batch |
+
+### Required Environment Variables
+
+```bash
+# Generate and set these BEFORE first run:
+export JWT_SECRET=$(openssl rand -hex 32)
+export WEBHOOK_SECRET=$(openssl rand -hex 32)
+export DB_PASSWORD="your-strong-database-password"
+export REDIS_PASSWORD="your-redis-password"
+export ALLOWED_ORIGINS="https://admin.example.com"
+```
 
 ## Quick Start
 
@@ -58,9 +87,9 @@ sudo apt-get install -f  # resolve dependencies
 ### Post-Install Setup
 
 ```bash
-# 1. Edit configuration
+# 1. Edit configuration and set required secrets
 sudo vim /etc/srmta/config.yaml
-sudo vim /etc/srmta/srmta.env          # database credentials
+sudo vim /etc/srmta/srmta.env          # REQUIRED: set JWT_SECRET, WEBHOOK_SECRET, DB_PASSWORD, REDIS_PASSWORD
 
 # 2. Edit sub-configs as needed
 sudo vim /etc/srmta/config.d/10-smtp.yaml       # SMTP ports & limits
@@ -198,17 +227,25 @@ Self-hosted IMAP servers and unbranded mail servers fall through to the "other" 
 The Node.js Fastify API runs separately:
 
 ```bash
-cd api && npm install && npm start
+cd web/api && npm install
+
+# Set required environment variables first
+export JWT_SECRET=$(openssl rand -hex 32)
+export WEBHOOK_SECRET=$(openssl rand -hex 32)
+export DB_PASSWORD="your-db-password"
+export ALLOWED_ORIGINS="https://your-admin-domain.com"
+
+npm start
 # Listens on :3000 by default
 ```
 
 Endpoints: `/api/auth/*`, `/api/send`, `/api/bulk`, `/api/schedule`, `/api/status/:id`, `/api/metrics`, `/api/webhook`, `/api/logs/*`, `/api/queue/*`, `/api/ips`, `/api/domains/*`
 
-OpenAPI spec: `api/openapi.yaml`
+OpenAPI spec: `web/api/openapi.yaml`
 
 ## Dashboard
 
-Open `dashboard/index.html` in a browser, or serve via nginx/caddy. Connects to the Admin API on `localhost:3000`.
+Open `web/ui/index.html` in a browser, or serve via nginx/caddy. Automatically connects to the API at the same origin (no hardcoded URLs).
 
 ## Monitoring
 
