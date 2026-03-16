@@ -1,6 +1,0 @@
-dfe59b4be7212544fb11765935ac715c  lib/systemd/system/srmta.service
-7004c7d4ad646377513a9b973df9f112  lib/systemd/system/srmta.socket
-1654c5ed62f25375e7c38102d97f4470  usr/sbin/srmta
-3775efecdba185fa5a7124161bcebc4e  usr/share/doc/srmta/changelog.Debian.gz
-df68e4a75ef4dc873026c6c547cd56ad  usr/share/srmta/migrations/init_mysql.sql
-e6cd3c5830a5cc528382359345e9a9b8  usr/share/srmta/migrations/init_postgres.sql

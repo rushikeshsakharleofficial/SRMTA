@@ -1,0 +1,14 @@
+# Build artifacts
+srmta
+rpmbuild/
+debbuild/
+*.tar.gz
+
+# Go
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
