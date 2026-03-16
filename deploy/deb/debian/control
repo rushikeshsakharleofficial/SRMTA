@@ -1,10 +1,10 @@
 Source: srmta
 Section: mail
 Priority: optional
-Maintainer: SRMTA Team <team@srmta.io>
+Maintainer: SRMTA Team <team@linuxhardened.com>
 Build-Depends: debhelper-compat (= 13), golang (>= 2:1.22~)
 Standards-Version: 4.6.2
-Homepage: https://github.com/srmta/srmta
+Homepage: https://github.com/rushikeshsakharleofficial/SRMTA
 Rules-Requires-Root: no
 
 Package: srmta

@@ -9,7 +9,7 @@ Version:    %{_version}
 Release:    %{_release}
 Summary:    SRMTA — Scalable RFC-Compliant Mail Transfer Agent
 License:    MIT
-URL:        https://github.com/srmta/srmta
+URL:        https://github.com/rushikeshsakharleofficial/SRMTA
 Source0:    %{name}-%{version}.tar.gz
 
 BuildRequires:  golang >= 1.22
@@ -61,8 +61,8 @@ CGO_ENABLED=0 go build \
 install -D -m 0755 %{_name} %{buildroot}%{_sbindir}/%{_name}
 
 # Systemd units
-install -D -m 0644 deploy/systemd/srmta.service %{buildroot}%{_unitdir}/%{_name}.service
-install -D -m 0644 deploy/systemd/srmta.socket  %{buildroot}%{_unitdir}/%{_name}.socket
+install -D -m 0644 deploy/systemd/srmta.service %{buildroot}/lib/systemd/system/%{_name}.service
+install -D -m 0644 deploy/systemd/srmta.socket  %{buildroot}/lib/systemd/system/%{_name}.socket
 
 # Configuration
 install -D -m 0640 configs/config.example.yaml %{buildroot}%{_sysconfdir}/%{_name}/config.yaml
@@ -137,8 +137,8 @@ echo ""
 %license LICENSE
 %doc README.md
 %{_sbindir}/%{_name}
-%{_unitdir}/%{_name}.service
-%{_unitdir}/%{_name}.socket
+/lib/systemd/system/%{_name}.service
+/lib/systemd/system/%{_name}.socket
 %dir %attr(0750,root,%{_name}) %{_sysconfdir}/%{_name}
 %config(noreplace) %attr(0640,root,%{_name}) %{_sysconfdir}/%{_name}/config.yaml
 %config(noreplace) %attr(0600,root,%{_name}) %{_sysconfdir}/%{_name}/srmta.env
@@ -150,7 +150,7 @@ echo ""
 %{_datadir}/%{_name}/migrations/
 
 %changelog
-* Mon Mar 16 2026 SRMTA Team <team@srmta.io> - 1.1.0-1
+* Mon Mar 16 2026 SRMTA Team <team@linuxhardened.com> - 1.1.0-1
 - Security: remove hardcoded admin/admin credentials, require DB-backed bcrypt auth
 - Security: remove default JWT secret fallback, app refuses to start without JWT_SECRET
 - Security: remove hardcoded DB passwords from source and configs
@@ -170,7 +170,7 @@ echo ""
 - Fix: log export limit capped at 50000, pagination bounds-checked
 - Fix: health endpoint no longer leaks process uptime
 
-* Sat Feb 22 2026 SRMTA Team <team@srmta.io> - 1.0.0-1
+* Sun Feb 22 2026 SRMTA Team <team@linuxhardened.com> - 1.0.0-1
 - Initial release
 - Go SMTP engine with ESMTP, STARTTLS, AUTH, pipelining
 - Multi-spool queue with crash recovery journal
