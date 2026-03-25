@@ -12,3 +12,6 @@ debbuild/
 .vscode/
 *.swp
 *.swo
+
+# Gemini CLI
+GEMINI.md
