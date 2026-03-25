@@ -29,6 +29,7 @@ GEMINI.md
 *.pem
 id_rsa
 config.yaml
+configs/config.d/*.yaml
 *.ini
 !*.example
 !*.example.*
