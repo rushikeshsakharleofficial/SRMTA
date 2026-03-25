@@ -230,7 +230,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 				e.logger.Debug("Delivery attempt failed",
 					"id", msg.ID,
 					"mx", mx.Host,
-					"recipient", recipient,
+					"recipient", logging.MaskEmail(recipient),
 					"error", err,
 				)
 				continue
@@ -242,7 +242,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 				duration := time.Since(start)
 				e.logger.Info("Message delivered",
 					"id", msg.ID,
-					"recipient", recipient,
+					"recipient", logging.MaskEmail(recipient),
 					"mx", mx.Host,
 					"ip", selectedIP.Address,
 					"tls", result.TLSUsed,

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -290,8 +291,8 @@ func (e *CSVExporter) WriteEvent(evt *DeliveryEvent) {
 	fmt.Fprintf(e.writer, "%s,%s,%s,%s,%s,%d,%q,%s,%t,%d,%s,%d,%s\n",
 		evt.Timestamp.Format(time.RFC3339),
 		evt.MessageID,
-		evt.Sender,
-		evt.Recipient,
+		MaskEmail(evt.Sender),
+		MaskEmail(evt.Recipient),
 		evt.RemoteMX,
 		evt.ResponseCode,
 		evt.ResponseText,
@@ -302,4 +303,26 @@ func (e *CSVExporter) WriteEvent(evt *DeliveryEvent) {
 		evt.ProcessingLatency,
 		evt.Status,
 	)
+}
+
+// MaskEmail redacts an email address or username for privacy compliance in logs.
+// Format: user@domain.com -> u***r@domain.com
+func MaskEmail(email string) string {
+	if email == "" || !strings.Contains(email, "@") {
+		if len(email) <= 2 {
+			return email
+		}
+		return string(email[0]) + "***" + string(email[len(email)-1])
+	}
+	parts := strings.SplitN(email, "@", 2)
+	user := parts[0]
+	domain := parts[1]
+
+	if len(user) <= 1 {
+		return "*" + "@" + domain
+	}
+	if len(user) == 2 {
+		return string(user[0]) + "*" + "@" + domain
+	}
+	return string(user[0]) + "***" + string(user[len(user)-1]) + "@" + domain
 }

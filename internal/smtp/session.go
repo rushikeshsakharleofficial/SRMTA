@@ -424,7 +424,7 @@ func (s *Session) handleAuthPlain(parts []string) {
 	if s.authValidator != nil && !s.authValidator.ValidatePlain(username, password) {
 		s.writef("535 5.7.8 Authentication credentials invalid")
 		s.logger.Warn("AUTH PLAIN failed",
-			"remote", s.remoteAddr, "user", username, "correlation_id", s.correlationID)
+			"remote", s.remoteAddr, "user", logging.MaskEmail(username), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
 		return
 	}
@@ -432,7 +432,7 @@ func (s *Session) handleAuthPlain(parts []string) {
 	s.auth = true
 	s.state = stateAuth
 	s.logger.Info("Authentication successful",
-		"remote", s.remoteAddr, "user", username,
+		"remote", s.remoteAddr, "user", logging.MaskEmail(username),
 		"mechanism", "PLAIN", "correlation_id", s.correlationID)
 	s.writef("235 2.7.0 Authentication successful")
 	metrics.AuthSuccessTotal.Inc()
@@ -470,7 +470,7 @@ func (s *Session) handleAuthLogin() {
 	if s.authValidator != nil && !s.authValidator.ValidateLogin(string(usernameBytes), string(passwordBytes)) {
 		s.writef("535 5.7.8 Authentication credentials invalid")
 		s.logger.Warn("AUTH LOGIN failed",
-			"remote", s.remoteAddr, "user", string(usernameBytes), "correlation_id", s.correlationID)
+			"remote", s.remoteAddr, "user", logging.MaskEmail(string(usernameBytes)), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
 		return
 	}
@@ -478,7 +478,7 @@ func (s *Session) handleAuthLogin() {
 	s.auth = true
 	s.state = stateAuth
 	s.logger.Info("AUTH LOGIN successful",
-		"remote", s.remoteAddr, "user", string(usernameBytes),
+		"remote", s.remoteAddr, "user", logging.MaskEmail(string(usernameBytes)),
 		"mechanism", "LOGIN", "correlation_id", s.correlationID)
 	s.writef("235 2.7.0 Authentication successful")
 	metrics.AuthSuccessTotal.Inc()
@@ -521,7 +521,7 @@ func (s *Session) handleMAIL(args string) {
 		if !s.isDomainAllowed(domain) {
 			s.writef("553 5.7.1 Sender domain not allowed")
 			s.logger.Warn("Rejected sender: domain not allowed",
-				"remote", s.remoteAddr, "sender", email, "domain", domain)
+				"remote", s.remoteAddr, "sender", logging.MaskEmail(email), "domain", domain)
 			return
 		}
 	}
@@ -624,7 +624,7 @@ func (s *Session) handleDATA() {
 	latency := time.Since(s.startTime)
 	s.logger.Info("Message accepted",
 		"message_id", msgID,
-		"sender", s.mailFrom,
+		"sender", logging.MaskEmail(s.mailFrom),
 		"recipients", len(s.rcptTo),
 		"size", len(s.msgData),
 		"remote", s.remoteAddr,
@@ -774,7 +774,7 @@ func (s *Session) handleAuthCRAMMD5() {
 	if s.authValidator != nil && !s.authValidator.ValidateCRAMMD5(username, challenge, digest) {
 		s.writef("535 5.7.8 Authentication credentials invalid")
 		s.logger.Warn("AUTH CRAM-MD5 failed",
-			"remote", s.remoteAddr, "user", username, "correlation_id", s.correlationID)
+			"remote", s.remoteAddr, "user", logging.MaskEmail(username), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
 		return
 	}
@@ -782,7 +782,7 @@ func (s *Session) handleAuthCRAMMD5() {
 	s.auth = true
 	s.state = stateAuth
 	s.logger.Info("AUTH CRAM-MD5 successful",
-		"remote", s.remoteAddr, "user", username,
+		"remote", s.remoteAddr, "user", logging.MaskEmail(username),
 		"mechanism", "CRAM-MD5", "correlation_id", s.correlationID)
 	s.writef("235 2.7.0 Authentication successful")
 	metrics.AuthSuccessTotal.Inc()

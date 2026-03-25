@@ -160,7 +160,7 @@ func (m *Manager) Enqueue(sender string, recipients []string, data []byte, remot
 
 	m.logger.Debug("Message enqueued",
 		"id", msgID,
-		"sender", sender,
+		"sender", logging.MaskEmail(sender),
 		"recipients", len(recipients),
 		"domain", domain,
 		"shard", shardID,
@@ -312,7 +312,7 @@ func (m *Manager) DeadLetter(msg *Message, reason string) error {
 
 	m.logger.Warn("Message dead-lettered",
 		"id", msg.ID,
-		"sender", msg.Sender,
+		"sender", logging.MaskEmail(msg.Sender),
 		"domain", msg.Domain,
 		"retries", msg.RetryCount,
 		"reason", reason,
@@ -332,7 +332,7 @@ func (m *Manager) Fail(msg *Message, reason string) error {
 
 	m.logger.Error("Message permanently failed",
 		"id", msg.ID,
-		"sender", msg.Sender,
+		"sender", logging.MaskEmail(msg.Sender),
 		"domain", msg.Domain,
 		"reason", reason,
 	)

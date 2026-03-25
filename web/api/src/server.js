@@ -39,6 +39,32 @@ const config = {
   },
 };
 
+// ── Utils ─────────────────────────────────────────────────────────────────
+/**
+ * Mask an email address for privacy in logs.
+ * user@domain.com -> u***r@domain.com
+ */
+function maskEmail(email) {
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return email;
+  }
+  const [user, domain] = email.split('@');
+  if (user.length <= 1) return `*@${domain}`;
+  if (user.length === 2) return `${user[0]}*@${domain}`;
+  return `${user[0]}***${user[user.length - 1]}@${domain}`;
+}
+
+/**
+ * Redact PII from a webhook data object.
+ */
+function redactWebhookData(data) {
+  if (!data || typeof data !== 'object') return data;
+  const redacted = { ...data };
+  if (redacted.sender) redacted.sender = maskEmail(redacted.sender);
+  if (redacted.recipient) redacted.recipient = maskEmail(redacted.recipient);
+  return redacted;
+}
+
 // ── Register Plugins ──────────────────────────────────────────────────────
 async function registerPlugins() {
   // CORS — restrict to explicit origins
@@ -139,7 +165,10 @@ function authRoutes() {
 // ── Send Routes ───────────────────────────────────────────────────────────
 function sendRoutes() {
   // POST /api/send — Send a single email
-  fastify.post('/api/send', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.post('/api/send', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request, reply) => {
     const { from, to, subject, body, html } = request.body || {};
 
     if (!from || !to || !subject) {
@@ -158,7 +187,10 @@ function sendRoutes() {
   });
 
   // POST /api/bulk — Send bulk emails
-  fastify.post('/api/bulk', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.post('/api/bulk', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request, reply) => {
     const { messages } = request.body || {};
 
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -181,7 +213,10 @@ function sendRoutes() {
   });
 
   // POST /api/schedule — Schedule an email
-  fastify.post('/api/schedule', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.post('/api/schedule', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request, reply) => {
     const { from, to, subject, body, send_at } = request.body || {};
 
     if (!from || !to || !subject || !send_at) {
@@ -202,12 +237,14 @@ function sendRoutes() {
 // ── Status Routes ─────────────────────────────────────────────────────────
 function statusRoutes() {
   // GET /api/status/:id
-  fastify.get('/api/status/:id', { preHandler: [fastify.authenticate] }, async (request) => {
+  // IDOR Fix: Add ownership check (placeholder)
+  fastify.get('/api/status/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.params;
 
     // TODO: Query PostgreSQL for message status
-    return {
+    const message = {
       message_id: id,
+      user_id: 'some-user-id', // This should come from DB
       status: 'delivered',
       sender: 'sender@example.com',
       recipient: 'recipient@example.com',
@@ -217,13 +254,23 @@ function statusRoutes() {
       response_code: 250,
       response_text: '2.0.0 OK',
     };
+
+    // IDOR Check: Ensure user owns the message or is admin
+    if (request.user.role !== 'admin' && message.user_id !== request.user.id) {
+      return reply.code(403).send({ error: 'Forbidden', message: 'Access denied to this message status' });
+    }
+
+    return message;
   });
 }
 
 // ── Metrics Routes ────────────────────────────────────────────────────────
 function metricsRoutes() {
   // GET /api/metrics
-  fastify.get('/api/metrics', { preHandler: [fastify.authenticate] }, async () => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.get('/api/metrics', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async () => {
     // TODO: Query real metrics from SMTP engine
     return {
       timestamp: new Date().toISOString(),
@@ -279,7 +326,8 @@ function webhookRoutes() {
 
     // Process webhook
     const { event_type, data } = request.body || {};
-    fastify.log.info({ event_type, data }, 'Webhook received');
+    // Privacy Fix: Redact PII in webhook logs
+    fastify.log.info({ event_type, data: redactWebhookData(data) }, 'Webhook received');
 
     return { status: 'received' };
   });
@@ -288,7 +336,10 @@ function webhookRoutes() {
 // ── Log Export Routes ─────────────────────────────────────────────────────
 function logRoutes() {
   // GET /api/logs/export
-  fastify.get('/api/logs/export', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.get('/api/logs/export', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request, reply) => {
     const { from, to, status, sender } = request.query;
     const limit = Math.min(parseInt(request.query.limit) || 10000, 50000);
 
@@ -300,7 +351,10 @@ function logRoutes() {
   });
 
   // GET /api/logs — Paginated log viewer
-  fastify.get('/api/logs', { preHandler: [fastify.authenticate] }, async (request) => {
+  // RBAC Fix: Restrict to admin/operator
+  fastify.get('/api/logs', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request) => {
     const { status, sender, recipient } = request.query;
     const page = Math.max(1, parseInt(request.query.page) || 1);
     const per_page = Math.min(Math.max(1, parseInt(request.query.per_page) || 50), 200);
