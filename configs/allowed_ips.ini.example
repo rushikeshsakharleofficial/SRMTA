@@ -1,0 +1,16 @@
+# SRMTA Allowed IPs Example
+# Copy to allowed_ips.ini and fill in your IPs and CIDR ranges
+
+[ipv4]
+# Application servers
+203.0.113.10
+10.0.0.0/8
+127.0.0.1
+
+[ipv6]
+::1
+2001:db8::1
+
+[relay]
+# Trusted relay partners
+# 198.51.100.0/24

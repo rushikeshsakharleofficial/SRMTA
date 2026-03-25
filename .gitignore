@@ -7,6 +7,11 @@ debbuild/
 # Go
 /vendor/
 
+# Web (added)
+node_modules/
+.npm
+.yarn
+
 # IDE
 .idea/
 .vscode/
@@ -15,3 +20,20 @@ debbuild/
 
 # Gemini CLI
 GEMINI.md
+.geminiignore
+
+# Secrets and Local configuration (added)
+*.env
+*.env.local
+*.key
+*.pem
+id_rsa
+config.yaml
+*.ini
+!*.example
+!*.example.*
+
+# OS and Logs (added)
+.DS_Store
+Thumbs.db
+*.log

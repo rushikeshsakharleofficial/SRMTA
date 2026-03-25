@@ -1,0 +1,8 @@
+# SRMTA Allowed Domains Example
+# Copy to allowed_domains.ini and fill in your domains
+# One domain per line. Lines starting with # or ; are comments.
+
+[domains]
+example.com
+mail.example.com
+.example.com
