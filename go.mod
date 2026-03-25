@@ -1,5 +1,5 @@
 module github.com/srmta/srmta
 
-go 1.25.5
+go 1.25.7
 
 require gopkg.in/yaml.v3 v3.0.1
