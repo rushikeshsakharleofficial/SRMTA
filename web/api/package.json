@@ -9,9 +9,9 @@
         "test": "echo \"Tests placeholder\" && exit 0"
     },
     "dependencies": {
-        "fastify": "^4.26.0",
+        "fastify": "^5.7.2",
         "@fastify/cors": "^9.0.0",
-        "@fastify/jwt": "^8.0.0",
+        "@fastify/jwt": "^9.0.2",
         "@fastify/rate-limit": "^9.1.0",
         "@fastify/websocket": "^10.0.0",
         "pg": "^8.12.0",
