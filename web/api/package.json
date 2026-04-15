@@ -11,7 +11,7 @@
     "dependencies": {
         "fastify": "^5.0.0",
         "@fastify/cors": "^10.0.0",
-        "@fastify/jwt": "^9.0.0",
+        "@fastify/jwt": "^10.0.0",
         "@fastify/rate-limit": "^10.0.0",
         "@fastify/websocket": "^11.0.0",
         "pg": "^8.12.0",
