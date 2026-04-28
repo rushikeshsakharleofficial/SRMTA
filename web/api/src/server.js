@@ -5,6 +5,7 @@
  */
 
 const fastify = require('fastify')({ logger: true });
+const { Pool } = require('pg');
 
 // ── Configuration ─────────────────────────────────────────────────────────
 // Fail fast if critical secrets are not configured
@@ -39,7 +40,37 @@ const config = {
   },
 };
 
+// ── PostgreSQL Pool ───────────────────────────────────────────────────────
+const pool = new Pool({
+  host: config.db.host,
+  port: config.db.port,
+  user: config.db.user,
+  password: config.db.password,
+  database: config.db.database,
+  max: 20,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
+  ssl: { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => {
+  fastify.log.error({ err }, 'pg_pool_error');
+});
+
 // ── Utils ─────────────────────────────────────────────────────────────────
+/**
+ * Escape a single CSV field per RFC 4180.
+ * Wraps in quotes if it contains comma, quote, CR, or LF; doubles internal quotes.
+ */
+function csvEscape(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 /**
  * Mask an email address for privacy in logs.
  * user@domain.com -> u***r@domain.com
@@ -133,11 +164,11 @@ function authRoutes() {
     // Validate against database
     const bcrypt = require('bcryptjs');
     try {
-      // TODO: Replace with actual DB query using config.db pool
-      // const result = await db.query('SELECT id, username, password_hash, role FROM api_users WHERE username = $1', [username]);
-      // const user = result.rows[0];
-      // For now, reject all logins until DB auth is configured
-      const user = null;
+      const result = await pool.query(
+        'SELECT id, username, password_hash, role FROM api_users WHERE username = $1',
+        [username]
+      );
+      const user = result.rows[0];
       if (!user) {
         return reply.code(401).send({ error: 'Invalid credentials' });
       }
@@ -145,6 +176,9 @@ function authRoutes() {
       if (!valid) {
         return reply.code(401).send({ error: 'Invalid credentials' });
       }
+      // Best-effort last_login update; do not block auth on failure.
+      pool.query('UPDATE api_users SET last_login = NOW() WHERE id = $1', [user.id])
+        .catch((err) => fastify.log.warn({ err }, 'last_login_update_failed'));
       const token = fastify.jwt.sign({
         id: user.id,
         username: user.username,
@@ -152,7 +186,7 @@ function authRoutes() {
       });
       return { token, user: { id: user.id, username: user.username, role: user.role } };
     } catch (err) {
-      fastify.log.error(err, 'Login error');
+      fastify.log.error({ err }, 'login_error');
       return reply.code(500).send({ error: 'Internal server error' });
     }
   });
@@ -238,30 +272,48 @@ function sendRoutes() {
 // ── Status Routes ─────────────────────────────────────────────────────────
 function statusRoutes() {
   // GET /api/status/:id
-  // IDOR Fix: Add ownership check (placeholder)
-  fastify.get('/api/status/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // Note: delivery_events has no user_id column; per-row ownership is not
+  // representable in the current schema. Restricting to admin/operator avoids
+  // exposing arbitrary message metadata to viewer-level accounts.
+  fastify.get('/api/status/:id', {
+    preHandler: [fastify.requireRole(['admin', 'operator'])],
+  }, async (request, reply) => {
     const { id } = request.params;
 
-    // TODO: Query PostgreSQL for message status
-    const message = {
-      message_id: id,
-      user_id: 'some-user-id', // This should come from DB
-      status: 'delivered',
-      sender: 'sender@example.com',
-      recipient: 'recipient@example.com',
-      queued_at: new Date().toISOString(),
-      delivered_at: new Date().toISOString(),
-      retry_count: 0,
-      response_code: 250,
-      response_text: '2.0.0 OK',
-    };
-
-    // IDOR Check: Ensure user owns the message or is admin
-    if (request.user.role !== 'admin' && message.user_id !== request.user.id) {
-      return reply.code(403).send({ error: 'Forbidden', message: 'Access denied to this message status' });
+    try {
+      const result = await pool.query(
+        `SELECT message_id, status, sender, recipient, remote_mx,
+                response_code, response_text, ip_used, tls_status,
+                retry_count, dkim_status, processing_latency_ms, timestamp
+           FROM delivery_events
+          WHERE message_id = $1
+          ORDER BY timestamp DESC
+          LIMIT 1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return reply.code(404).send({ error: 'Not Found', message: 'Message not found' });
+      }
+      const row = result.rows[0];
+      return {
+        message_id: row.message_id,
+        status: row.status,
+        sender: row.sender,
+        recipient: row.recipient,
+        remote_mx: row.remote_mx,
+        response_code: row.response_code,
+        response_text: row.response_text,
+        ip_used: row.ip_used,
+        tls_status: row.tls_status,
+        retry_count: row.retry_count,
+        dkim_status: row.dkim_status,
+        processing_latency_ms: row.processing_latency_ms,
+        timestamp: row.timestamp,
+      };
+    } catch (err) {
+      fastify.log.error({ err }, 'status_query_error');
+      return reply.code(500).send({ error: 'Internal server error' });
     }
-
-    return message;
   });
 }
 
@@ -271,33 +323,55 @@ function metricsRoutes() {
   // RBAC Fix: Restrict to admin/operator
   fastify.get('/api/metrics', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
-  }, async () => {
-    // TODO: Query real metrics from SMTP engine
-    return {
-      timestamp: new Date().toISOString(),
-      delivery: {
-        total_sent: 0,
-        delivered: 0,
-        bounced: 0,
-        deferred: 0,
-        failed: 0,
-        success_rate: 0,
-      },
-      queue: {
-        incoming: 0,
-        active: 0,
-        deferred: 0,
-        retry: 0,
-        dead_letter: 0,
-        failed: 0,
-      },
-      smtp: {
-        active_connections: 0,
-        messages_per_second: 0,
-        avg_latency_ms: 0,
-      },
-      ip_pool: [],
-    };
+  }, async (request, reply) => {
+    // Aggregates the last 24h from delivery_events. Bounded window avoids
+    // scanning every monthly partition.
+    try {
+      const result = await pool.query(
+        `SELECT
+            COUNT(*)::bigint                                                    AS total_sent,
+            COUNT(*) FILTER (WHERE status = 'delivered')::bigint                AS delivered,
+            COUNT(*) FILTER (WHERE status = 'bounced')::bigint                  AS bounced,
+            COUNT(*) FILTER (WHERE status = 'deferred')::bigint                 AS deferred,
+            COUNT(*) FILTER (WHERE status = 'failed')::bigint                   AS failed,
+            COALESCE(AVG(processing_latency_ms) FILTER (WHERE status = 'delivered'), 0)::bigint AS avg_latency_ms
+           FROM delivery_events
+          WHERE timestamp > NOW() - INTERVAL '24 hours'`
+      );
+      const r = result.rows[0] || {};
+      const total = Number(r.total_sent || 0);
+      const delivered = Number(r.delivered || 0);
+      const success_rate = total > 0 ? delivered / total : 0;
+      return {
+        timestamp: new Date().toISOString(),
+        window: 'last_24h',
+        delivery: {
+          total_sent: total,
+          delivered,
+          bounced: Number(r.bounced || 0),
+          deferred: Number(r.deferred || 0),
+          failed: Number(r.failed || 0),
+          success_rate,
+        },
+        queue: {
+          incoming: 0,
+          active: 0,
+          deferred: 0,
+          retry: 0,
+          dead_letter: 0,
+          failed: 0,
+        },
+        smtp: {
+          active_connections: 0,
+          messages_per_second: 0,
+          avg_latency_ms: Number(r.avg_latency_ms || 0),
+        },
+        ip_pool: [],
+      };
+    } catch (err) {
+      fastify.log.error({ err }, 'metrics_query_error');
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
   });
 }
 
@@ -335,45 +409,130 @@ function webhookRoutes() {
 }
 
 // ── Log Export Routes ─────────────────────────────────────────────────────
+/**
+ * Build a parameterized WHERE clause from log filters.
+ * Returns { where: 'WHERE ...' | '', params: [...] }.
+ */
+function buildLogFilters(query) {
+  const params = [];
+  const clauses = [];
+  if (query.status) {
+    params.push(query.status);
+    clauses.push(`status = $${params.length}`);
+  }
+  if (query.sender) {
+    params.push(query.sender);
+    clauses.push(`sender = $${params.length}`);
+  }
+  if (query.recipient) {
+    params.push(query.recipient);
+    clauses.push(`recipient = $${params.length}`);
+  }
+  return {
+    where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
+    params,
+  };
+}
+
 function logRoutes() {
+  const CSV_COLUMNS = [
+    'timestamp', 'message_id', 'sender', 'recipient', 'remote_mx',
+    'response_code', 'response_text', 'ip_used', 'tls_status',
+    'retry_count', 'dkim_status', 'processing_latency_ms', 'status',
+  ];
+
   // GET /api/logs/export
   // RBAC Fix: Restrict to admin/operator
   fastify.get('/api/logs/export', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
   }, async (request, reply) => {
     const limit = Math.min(Number.parseInt(request.query.limit) || 10000, 50000);
+    const { where, params } = buildLogFilters(request.query);
+    params.push(limit);
 
-    // TODO: Query PostgreSQL for delivery events and stream as CSV
     reply.header('Content-Type', 'text/csv');
     reply.header('Content-Disposition', `attachment; filename="srmta-logs-${Date.now()}.csv"`);
 
-    return 'timestamp,message_id,sender,recipient,remote_mx,response_code,response_text,ip_used,tls_status,retry_count,dkim_status,processing_latency_ms,status\n';
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT ${CSV_COLUMNS.join(', ')}
+           FROM delivery_events
+           ${where}
+           ORDER BY timestamp DESC
+           LIMIT $${params.length}`,
+        params
+      );
+    } catch (err) {
+      fastify.log.error({ err }, 'logs_export_query_error');
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+
+    // "Streaming-ish": hijack and write rows to the raw socket so we don't
+    // build a giant string in memory.
+    reply.hijack();
+    const raw = reply.raw;
+    raw.setHeader('Content-Type', 'text/csv');
+    raw.setHeader('Content-Disposition', `attachment; filename="srmta-logs-${Date.now()}.csv"`);
+    raw.write(`${CSV_COLUMNS.join(',')}\n`);
+    for (const row of result.rows) {
+      const line = CSV_COLUMNS.map((c) => csvEscape(row[c])).join(',');
+      raw.write(`${line}\n`);
+    }
+    raw.end();
   });
 
   // GET /api/logs — Paginated log viewer
   // RBAC Fix: Restrict to admin/operator
   fastify.get('/api/logs', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
-  }, async (request) => {
+  }, async (request, reply) => {
     const page = Math.max(1, Number.parseInt(request.query.page) || 1);
     const per_page = Math.min(Math.max(1, Number.parseInt(request.query.per_page) || 50), 200);
+    const offset = (page - 1) * per_page;
 
-    // TODO: Query PostgreSQL
-    return {
-      data: [],
-      pagination: {
-        page,
-        per_page,
-        total: 0,
-        total_pages: 0,
-      },
-    };
+    const { where, params } = buildLogFilters(request.query);
+
+    try {
+      const dataParams = [...params, per_page, offset];
+      const dataSql = `
+        SELECT timestamp, message_id, sender, recipient, remote_mx,
+               response_code, response_text, ip_used, tls_status,
+               retry_count, dkim_status, processing_latency_ms, status
+          FROM delivery_events
+          ${where}
+          ORDER BY timestamp DESC
+          LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`;
+      const countSql = `SELECT COUNT(*)::bigint AS total FROM delivery_events ${where}`;
+
+      const [dataResult, countResult] = await Promise.all([
+        pool.query(dataSql, dataParams),
+        pool.query(countSql, params),
+      ]);
+
+      const total = Number(countResult.rows[0]?.total || 0);
+      return {
+        data: dataResult.rows,
+        pagination: {
+          page,
+          per_page,
+          total,
+          total_pages: Math.ceil(total / per_page),
+        },
+      };
+    } catch (err) {
+      fastify.log.error({ err }, 'logs_query_error');
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
   });
 }
 
 // ── Queue Management Routes ───────────────────────────────────────────────
 function queueRoutes() {
   // GET /api/queue/stats
+  // Stub: queue depth lives in Redis / on-disk spool dirs (see internal/queue),
+  // not in PostgreSQL. Wiring this up requires Redis integration which is out
+  // of scope for this change.
   fastify.get('/api/queue/stats', { preHandler: [fastify.authenticate] }, async () => {
     return {
       spools: {
@@ -406,8 +565,23 @@ function domainRoutes() {
   });
 
   // GET /api/ips — IP pool health
-  fastify.get('/api/ips', { preHandler: [fastify.authenticate] }, async () => {
-    return { ips: [] };
+  // No `ip_pool` table in schema; pulls latest health snapshot per IP from
+  // `ip_health_log`.
+  fastify.get('/api/ips', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    try {
+      const result = await pool.query(
+        `SELECT DISTINCT ON (ip_address)
+                ip_address, health_score, total_sent,
+                rate_4xx, rate_5xx, timeout_rate, tls_fail_rate,
+                disabled, recorded_at
+           FROM ip_health_log
+          ORDER BY ip_address, recorded_at DESC`
+      );
+      return { ips: result.rows };
+    } catch (err) {
+      fastify.log.error({ err }, 'ips_query_error');
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
   });
 
   // POST /api/ips/:address/disable
@@ -486,5 +660,26 @@ async function start() {
     process.exit(1);
   }
 }
+
+// ── Graceful Shutdown ─────────────────────────────────────────────────────
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  fastify.log.info({ signal }, 'shutting_down');
+  try {
+    await fastify.close();
+  } catch (err) {
+    fastify.log.error({ err }, 'fastify_close_error');
+  }
+  try {
+    await pool.end();
+  } catch (err) {
+    fastify.log.error({ err }, 'pg_pool_close_error');
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 start();

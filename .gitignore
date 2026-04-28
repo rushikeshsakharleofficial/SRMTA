@@ -38,3 +38,6 @@ configs/config.d/*.yaml
 .DS_Store
 Thumbs.db
 *.log
+
+# Claude Code
+.claude/

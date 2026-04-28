@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/srmta/srmta/internal/config"
@@ -37,6 +38,8 @@ type Resolver struct {
 	cache    map[string]*CacheEntry
 	mu       sync.RWMutex
 	resolver *net.Resolver
+	hits     int64
+	misses   int64
 }
 
 // NewResolver creates a new DNS resolver.
@@ -189,11 +192,14 @@ func (r *Resolver) getFromCache(domain string) []*MXRecord {
 
 	entry, exists := r.cache[domain]
 	if !exists {
+		atomic.AddInt64(&r.misses, 1)
 		return nil
 	}
 	if time.Now().After(entry.ExpiresAt) {
+		atomic.AddInt64(&r.misses, 1)
 		return nil // Expired
 	}
+	atomic.AddInt64(&r.hits, 1)
 	return entry.Records
 }
 
@@ -270,5 +276,11 @@ func (r *Resolver) FlushCache() {
 func (r *Resolver) CacheStats() (size int, hitRate float64) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.cache), 0 // TODO: track hit/miss
+	hits := atomic.LoadInt64(&r.hits)
+	misses := atomic.LoadInt64(&r.misses)
+	total := hits + misses
+	if total == 0 {
+		return len(r.cache), 0
+	}
+	return len(r.cache), float64(hits) / float64(total)
 }
