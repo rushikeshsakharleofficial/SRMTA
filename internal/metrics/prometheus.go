@@ -15,6 +15,8 @@ import (
 	"github.com/srmta/srmta/internal/config"
 )
 
+const headerContentType = "Content-Type"
+
 // ── Thread-Safe Prometheus-Compatible Metrics ──────────────────────────────
 // All counters and gauges use atomic operations for safe concurrent access.
 
@@ -261,7 +263,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // metricsHandler serves Prometheus-format metrics (thread-safe reads).
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.Header().Set(headerContentType, "text/plain; version=0.0.4")
 
 	// SMTP metrics
 	writeMetric(w, "srmta_smtp_connections_total", "counter", ConnectionsTotal.Value())
@@ -307,7 +309,7 @@ func writeHistogram(w http.ResponseWriter, name string, h *Histogram) {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"healthy","service":"srmta"}`))
 }
@@ -345,7 +347,7 @@ func fullHealthHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(health)
 }

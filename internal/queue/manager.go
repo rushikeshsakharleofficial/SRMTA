@@ -35,6 +35,8 @@ const (
 	SpoolFailed     SpoolType = "failed"
 )
 
+const shardDirFmt = "shard-%03d"
+
 // Message represents a queued email message.
 type Message struct {
 	ID         string    `json:"id"`
@@ -98,7 +100,7 @@ func NewManager(cfg config.QueueConfig, redis *store.RedisStore, db store.Databa
 
 		// Create shard subdirectories for high-volume deployments
 		for i := 0; i < cfg.ShardCount; i++ {
-			shardDir := filepath.Join(dir, fmt.Sprintf("shard-%03d", i))
+			shardDir := filepath.Join(dir, fmt.Sprintf(shardDirFmt, i))
 			if err := os.MkdirAll(shardDir, 0750); err != nil {
 				return nil, fmt.Errorf("failed to create shard dir %s: %w", shardDir, err)
 			}
@@ -358,7 +360,7 @@ func (m *Manager) Complete(msg *Message) error {
 // GetActiveMessages returns messages from the active spool for a given domain.
 func (m *Manager) GetActiveMessages(domain string, limit int) ([]*Message, error) {
 	shardID := m.domainShard(domain)
-	dir := filepath.Join(m.spoolDirs[SpoolActive], fmt.Sprintf("shard-%03d", shardID))
+	dir := filepath.Join(m.spoolDirs[SpoolActive], fmt.Sprintf(shardDirFmt, shardID))
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -397,7 +399,7 @@ func (m *Manager) QueueDepth() int64 {
 
 // writeToSpool writes message data and metadata to the spool directory.
 func (m *Manager) writeToSpool(msg *Message) error {
-	shardDir := filepath.Join(m.spoolDirs[msg.Spool], fmt.Sprintf("shard-%03d", msg.ShardID))
+	shardDir := filepath.Join(m.spoolDirs[msg.Spool], fmt.Sprintf(shardDirFmt, msg.ShardID))
 	dataPath := filepath.Join(shardDir, msg.ID+".msg")
 	metaPath := filepath.Join(shardDir, msg.ID+".meta")
 
@@ -435,8 +437,8 @@ func (m *Manager) moveSpool(msg *Message, target SpoolType) {
 	msg.Spool = target
 
 	// Move files
-	oldDir := filepath.Join(m.spoolDirs[oldSpool], fmt.Sprintf("shard-%03d", msg.ShardID))
-	newDir := filepath.Join(m.spoolDirs[target], fmt.Sprintf("shard-%03d", msg.ShardID))
+	oldDir := filepath.Join(m.spoolDirs[oldSpool], fmt.Sprintf(shardDirFmt, msg.ShardID))
+	newDir := filepath.Join(m.spoolDirs[target], fmt.Sprintf(shardDirFmt, msg.ShardID))
 
 	oldData := filepath.Join(oldDir, msg.ID+".msg")
 	newData := filepath.Join(newDir, msg.ID+".msg")
@@ -460,7 +462,7 @@ func (m *Manager) moveSpool(msg *Message, target SpoolType) {
 
 // removeFromSpool removes message files from the spool.
 func (m *Manager) removeFromSpool(msg *Message) {
-	dir := filepath.Join(m.spoolDirs[msg.Spool], fmt.Sprintf("shard-%03d", msg.ShardID))
+	dir := filepath.Join(m.spoolDirs[msg.Spool], fmt.Sprintf(shardDirFmt, msg.ShardID))
 	os.Remove(filepath.Join(dir, msg.ID+".msg"))
 	os.Remove(filepath.Join(dir, msg.ID+".meta"))
 }
@@ -486,7 +488,7 @@ func (m *Manager) rehydrate() {
 	spools := []SpoolType{SpoolIncoming, SpoolActive, SpoolDeferred, SpoolRetry}
 	for _, spool := range spools {
 		for i := 0; i < m.cfg.ShardCount; i++ {
-			dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf("shard-%03d", i))
+			dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf(shardDirFmt, i))
 			entries, err := os.ReadDir(dir)
 			if err != nil {
 				continue
@@ -508,7 +510,7 @@ func (m *Manager) rehydrate() {
 func (m *Manager) scanRetryQueue() {
 	now := time.Now()
 	for i := 0; i < m.cfg.ShardCount; i++ {
-		dir := filepath.Join(m.spoolDirs[SpoolDeferred], fmt.Sprintf("shard-%03d", i))
+		dir := filepath.Join(m.spoolDirs[SpoolDeferred], fmt.Sprintf(shardDirFmt, i))
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -542,7 +544,7 @@ func (m *Manager) scanForExpired() {
 
 // expireShardMessages checks one shard of one spool and dead-letters any expired messages.
 func (m *Manager) expireShardMessages(spool SpoolType, shardIdx int, now time.Time) {
-	dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf("shard-%03d", shardIdx))
+	dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf(shardDirFmt, shardIdx))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

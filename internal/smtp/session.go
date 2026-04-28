@@ -42,6 +42,12 @@ const (
 // maxCommandLength is the maximum SMTP command line length per RFC 5321 §4.5.3.1.4.
 const maxCommandLength = 512
 
+const (
+	errInvalidBase64 = "501 5.5.2 Invalid Base64 encoding"
+	errAuthInvalid   = "535 5.7.8 Authentication credentials invalid"
+	authSuccess      = "235 2.7.0 Authentication successful"
+)
+
 // AuthValidator is an interface for validating SMTP authentication credentials.
 type AuthValidator interface {
 	ValidatePlain(username, password string) bool
@@ -160,7 +166,7 @@ func (s *Session) Handle(ctx context.Context) {
 		cmd, args := s.parseCommand(line)
 		metrics.SMTPCommandsTotal.WithLabelValues(cmd).Inc()
 
-		if quit := s.dispatchCommand(cmd, args); quit {
+		if s.dispatchCommand(cmd, args) {
 			return
 		}
 	}
@@ -425,7 +431,7 @@ func (s *Session) handleAuthPlain(parts []string) {
 
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		s.writef("501 5.5.2 Invalid Base64 encoding")
+		s.writef(errInvalidBase64)
 		return
 	}
 
@@ -441,7 +447,7 @@ func (s *Session) handleAuthPlain(parts []string) {
 
 	// Validate credentials
 	if s.authValidator != nil && !s.authValidator.ValidatePlain(username, password) {
-		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.writef(errAuthInvalid)
 		s.logger.Warn("AUTH PLAIN failed",
 			"remote", s.remoteAddr, "user", logging.MaskEmail(username), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
@@ -453,7 +459,7 @@ func (s *Session) handleAuthPlain(parts []string) {
 	s.logger.Info("Authentication successful",
 		"remote", s.remoteAddr, "user", logging.MaskEmail(username),
 		"mechanism", "PLAIN", "correlation_id", s.correlationID)
-	s.writef("235 2.7.0 Authentication successful")
+	s.writef(authSuccess)
 	metrics.AuthSuccessTotal.Inc()
 }
 
@@ -475,19 +481,19 @@ func (s *Session) handleAuthLogin() {
 
 	usernameBytes, err := base64.StdEncoding.DecodeString(username)
 	if err != nil {
-		s.writef("501 5.5.2 Invalid Base64 encoding")
+		s.writef(errInvalidBase64)
 		return
 	}
 
 	passwordBytes, err := base64.StdEncoding.DecodeString(password)
 	if err != nil {
-		s.writef("501 5.5.2 Invalid Base64 encoding")
+		s.writef(errInvalidBase64)
 		return
 	}
 
 	// Validate credentials
 	if s.authValidator != nil && !s.authValidator.ValidateLogin(string(usernameBytes), string(passwordBytes)) {
-		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.writef(errAuthInvalid)
 		s.logger.Warn("AUTH LOGIN failed",
 			"remote", s.remoteAddr, "user", logging.MaskEmail(string(usernameBytes)), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
@@ -499,7 +505,7 @@ func (s *Session) handleAuthLogin() {
 	s.logger.Info("AUTH LOGIN successful",
 		"remote", s.remoteAddr, "user", logging.MaskEmail(string(usernameBytes)),
 		"mechanism", "LOGIN", "correlation_id", s.correlationID)
-	s.writef("235 2.7.0 Authentication successful")
+	s.writef(authSuccess)
 	metrics.AuthSuccessTotal.Inc()
 }
 
@@ -785,7 +791,7 @@ func (s *Session) handleAuthCRAMMD5() {
 
 	decoded, err := base64.StdEncoding.DecodeString(response)
 	if err != nil {
-		s.writef("501 5.5.2 Invalid Base64 encoding")
+		s.writef(errInvalidBase64)
 		return
 	}
 
@@ -801,7 +807,7 @@ func (s *Session) handleAuthCRAMMD5() {
 
 	// Validate via auth backend
 	if s.authValidator != nil && !s.authValidator.ValidateCRAMMD5(username, challenge, digest) {
-		s.writef("535 5.7.8 Authentication credentials invalid")
+		s.writef(errAuthInvalid)
 		s.logger.Warn("AUTH CRAM-MD5 failed",
 			"remote", s.remoteAddr, "user", logging.MaskEmail(username), "correlation_id", s.correlationID)
 		metrics.AuthFailureTotal.Inc()
@@ -813,7 +819,7 @@ func (s *Session) handleAuthCRAMMD5() {
 	s.logger.Info("AUTH CRAM-MD5 successful",
 		"remote", s.remoteAddr, "user", logging.MaskEmail(username),
 		"mechanism", "CRAM-MD5", "correlation_id", s.correlationID)
-	s.writef("235 2.7.0 Authentication successful")
+	s.writef(authSuccess)
 	metrics.AuthSuccessTotal.Inc()
 }
 

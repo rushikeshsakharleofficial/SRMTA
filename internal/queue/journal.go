@@ -21,6 +21,8 @@ type JournalEntry struct {
 	Domain    string    `json:"domain"`
 }
 
+const journalFileName = "journal.log"
+
 var (
 	journalMu   sync.Mutex
 	journalFile *os.File
@@ -34,7 +36,7 @@ func WriteJournalEntry(spoolDir string, entry JournalEntry) error {
 
 	// Open or create journal file
 	if journalFile == nil {
-		journalPath := filepath.Join(spoolDir, "journal.log")
+		journalPath := filepath.Join(spoolDir, journalFileName)
 		f, err := os.OpenFile(journalPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 		if err != nil {
 			return fmt.Errorf("failed to open journal: %w", err)
@@ -63,7 +65,7 @@ func WriteJournalEntry(spoolDir string, entry JournalEntry) error {
 
 // ReadJournal reads all journal entries from the crash-recovery log.
 func ReadJournal(spoolDir string) ([]JournalEntry, error) {
-	journalPath := filepath.Join(spoolDir, "journal.log")
+	journalPath := filepath.Join(spoolDir, journalFileName)
 
 	data, err := os.ReadFile(journalPath)
 	if err != nil {
@@ -101,7 +103,7 @@ func RotateJournal(spoolDir string) error {
 		journalFile = nil
 	}
 
-	journalPath := filepath.Join(spoolDir, "journal.log")
+	journalPath := filepath.Join(spoolDir, journalFileName)
 	archivePath := filepath.Join(spoolDir, fmt.Sprintf("journal.%s.log", time.Now().Format("20060102-150405")))
 
 	if err := os.Rename(journalPath, archivePath); err != nil && !os.IsNotExist(err) {
