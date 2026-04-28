@@ -98,8 +98,15 @@ func main() {
 
 	smtpServer := smtp.NewServer(cfg.SMTP, cfg.TLS, queueManager, logger)
 
+	svc := subsystems{
+		metrics:  metricsServer,
+		queue:    queueManager,
+		delivery: deliveryEngine,
+		ipPool:   ipPool,
+		smtp:     smtpServer,
+	}
 	var wg sync.WaitGroup
-	startSubsystems(ctx, &wg, metricsServer, queueManager, deliveryEngine, ipPool, smtpServer, logger, cancel)
+	startSubsystems(ctx, &wg, svc, logger, cancel)
 
 	smtpAddr := cfg.SMTP.InboundAddr
 	if smtpAddr == "" {
@@ -177,19 +184,20 @@ func buildRouter(cfg *config.Config, ipPool *ip.Pool) *routing.Router {
 	return router
 }
 
-func startSubsystems(ctx context.Context, wg *sync.WaitGroup,
-	metricsServer *metrics.Server,
-	queueManager *queue.Manager,
-	deliveryEngine *delivery.Engine,
-	ipPool *ip.Pool,
-	smtpServer *smtp.Server,
-	logger *logging.Logger,
-	cancel context.CancelFunc,
-) {
+// subsystems groups the long-lived service instances started by main.
+type subsystems struct {
+	metrics  *metrics.Server
+	queue    *queue.Manager
+	delivery *delivery.Engine
+	ipPool   *ip.Pool
+	smtp     *smtp.Server
+}
+
+func startSubsystems(ctx context.Context, wg *sync.WaitGroup, svc subsystems, logger *logging.Logger, cancel context.CancelFunc) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := metricsServer.Start(ctx); err != nil {
+		if err := svc.metrics.Start(ctx); err != nil {
 			logger.Error("Metrics server error", "error", err)
 		}
 	}()
@@ -197,25 +205,25 @@ func startSubsystems(ctx context.Context, wg *sync.WaitGroup,
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		queueManager.Start(ctx)
+		svc.queue.Start(ctx)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		deliveryEngine.Start(ctx)
+		svc.delivery.Start(ctx)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ipPool.StartHealthMonitor(ctx)
+		svc.ipPool.StartHealthMonitor(ctx)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := smtpServer.Start(ctx); err != nil {
+		if err := svc.smtp.Start(ctx); err != nil {
 			logger.Error("SMTP server error", "error", err)
 			cancel()
 		}
