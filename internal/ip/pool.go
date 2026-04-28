@@ -158,57 +158,59 @@ func (p *Pool) RecordResult(address string, delivered bool, responseCode int, tl
 		if ip.Address != address {
 			continue
 		}
-
 		ip.mu.Lock()
-		ip.Health.TotalSent++
-
-		if delivered {
-			ip.Health.Delivered++
-		} else if responseCode >= 500 {
-			ip.Health.HardBounces++
-		} else if responseCode >= 400 {
-			ip.Health.SoftBounces++
-		}
-
-		if timeout {
-			ip.Health.Timeouts++
-		}
-		if !tlsUsed {
-			ip.Health.TLSFailures++
-		}
-
-		// Recalculate rates
-		total := float64(ip.Health.TotalSent)
-		if total > 0 {
-			ip.Health.Rate4xx = float64(ip.Health.SoftBounces) / total
-			ip.Health.Rate5xx = float64(ip.Health.HardBounces) / total
-			ip.Health.TimeoutRate = float64(ip.Health.Timeouts) / total
-			ip.Health.TLSFailRate = float64(ip.Health.TLSFailures) / total
-		}
-
-		// Calculate health score (weighted formula)
-		ip.Health.HealthScore = p.calculateHealthScore(&ip.Health)
-		ip.Health.LastUpdated = time.Now()
-
-		// Auto-disable if health score drops below threshold
-		if ip.Health.HealthScore < p.cfg.DisableThreshold && !ip.Disabled {
-			ip.Disabled = true
-			ip.DisabledAt = time.Now()
-			p.logger.Warn("IP auto-disabled due to poor health",
-				"ip", ip.Address,
-				"score", ip.Health.HealthScore,
-				"4xx_rate", ip.Health.Rate4xx,
-				"5xx_rate", ip.Health.Rate5xx,
-			)
-			metrics.IPDisabled.WithLabelValues(ip.Address).Inc()
-		}
-
-		// Update Prometheus metrics
-		metrics.IPHealthScore.WithLabelValues(ip.Address).Set(ip.Health.HealthScore)
-
+		p.updateIPHealth(ip, delivered, responseCode, tlsUsed, timeout)
 		ip.mu.Unlock()
 		return
 	}
+}
+
+// updateIPHealth applies one delivery result to ip's counters, recalculates rates/score,
+// and auto-disables the IP if the health score falls below the threshold.
+// Caller must hold ip.mu.
+func (p *Pool) updateIPHealth(ip *PoolIP, delivered bool, responseCode int, tlsUsed bool, timeout bool) {
+	ip.Health.TotalSent++
+
+	switch {
+	case delivered:
+		ip.Health.Delivered++
+	case responseCode >= 500:
+		ip.Health.HardBounces++
+	case responseCode >= 400:
+		ip.Health.SoftBounces++
+	}
+
+	if timeout {
+		ip.Health.Timeouts++
+	}
+	if !tlsUsed {
+		ip.Health.TLSFailures++
+	}
+
+	total := float64(ip.Health.TotalSent)
+	if total > 0 {
+		ip.Health.Rate4xx = float64(ip.Health.SoftBounces) / total
+		ip.Health.Rate5xx = float64(ip.Health.HardBounces) / total
+		ip.Health.TimeoutRate = float64(ip.Health.Timeouts) / total
+		ip.Health.TLSFailRate = float64(ip.Health.TLSFailures) / total
+	}
+
+	ip.Health.HealthScore = p.calculateHealthScore(&ip.Health)
+	ip.Health.LastUpdated = time.Now()
+
+	if ip.Health.HealthScore < p.cfg.DisableThreshold && !ip.Disabled {
+		ip.Disabled = true
+		ip.DisabledAt = time.Now()
+		p.logger.Warn("IP auto-disabled due to poor health",
+			"ip", ip.Address,
+			"score", ip.Health.HealthScore,
+			"4xx_rate", ip.Health.Rate4xx,
+			"5xx_rate", ip.Health.Rate5xx,
+		)
+		metrics.IPDisabled.WithLabelValues(ip.Address).Inc()
+	}
+
+	metrics.IPHealthScore.WithLabelValues(ip.Address).Set(ip.Health.HealthScore)
 }
 
 // calculateHealthScore computes a health score from 0.0 to 1.0.

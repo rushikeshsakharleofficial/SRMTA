@@ -82,71 +82,81 @@ func (s *SPFChecker) CheckHost(senderIP, domain string) (SPFResult, string) {
 func (s *SPFChecker) evaluate(ctx context.Context, ip net.IP, domain, record string) (SPFResult, string) {
 	mechanisms := strings.Fields(record)
 
-	for _, mech := range mechanisms[1:] { // Skip "v=spf1"
-		qualifier := SPFPass
-
-		// Check for qualifier prefix
-		switch {
-		case strings.HasPrefix(mech, "+"):
-			qualifier = SPFPass
-			mech = mech[1:]
-		case strings.HasPrefix(mech, "-"):
-			qualifier = SPFFail
-			mech = mech[1:]
-		case strings.HasPrefix(mech, "~"):
-			qualifier = SPFSoftFail
-			mech = mech[1:]
-		case strings.HasPrefix(mech, "?"):
-			qualifier = SPFNeutral
-			mech = mech[1:]
-		}
-
-		mechLower := strings.ToLower(mech)
-
-		switch {
-		case mechLower == "all":
-			return qualifier, "matched: all"
-
-		case strings.HasPrefix(mechLower, "ip4:"):
-			cidr := mech[4:]
-			if s.matchIP(ip, cidr) {
-				return qualifier, fmt.Sprintf("matched: ip4:%s", cidr)
-			}
-
-		case strings.HasPrefix(mechLower, "ip6:"):
-			cidr := mech[4:]
-			if s.matchIP(ip, cidr) {
-				return qualifier, fmt.Sprintf("matched: ip6:%s", cidr)
-			}
-
-		case strings.HasPrefix(mechLower, "a"):
-			targetDomain := domain
-			if strings.HasPrefix(mechLower, "a:") {
-				targetDomain = mech[2:]
-			}
-			if s.matchA(ctx, ip, targetDomain) {
-				return qualifier, fmt.Sprintf("matched: a:%s", targetDomain)
-			}
-
-		case strings.HasPrefix(mechLower, "mx"):
-			targetDomain := domain
-			if strings.HasPrefix(mechLower, "mx:") {
-				targetDomain = mech[3:]
-			}
-			if s.matchMX(ctx, ip, targetDomain) {
-				return qualifier, fmt.Sprintf("matched: mx:%s", targetDomain)
-			}
-
-		case strings.HasPrefix(mechLower, "include:"):
-			includeDomain := mech[8:]
-			result, reason := s.CheckHost(ip.String(), includeDomain)
-			if result == SPFPass {
-				return qualifier, fmt.Sprintf("matched: include:%s (%s)", includeDomain, reason)
-			}
+	for _, raw := range mechanisms[1:] { // Skip "v=spf1"
+		qualifier, mech := parseQualifier(raw)
+		if matched, reason := s.matchMechanism(ctx, ip, domain, mech); matched {
+			return qualifier, reason
 		}
 	}
 
 	return SPFNeutral, "no mechanism matched"
+}
+
+// parseQualifier strips the leading qualifier character (+, -, ~, ?) from a
+// mechanism token and returns the corresponding SPFResult and the bare mechanism.
+func parseQualifier(mech string) (SPFResult, string) {
+	switch {
+	case strings.HasPrefix(mech, "+"):
+		return SPFPass, mech[1:]
+	case strings.HasPrefix(mech, "-"):
+		return SPFFail, mech[1:]
+	case strings.HasPrefix(mech, "~"):
+		return SPFSoftFail, mech[1:]
+	case strings.HasPrefix(mech, "?"):
+		return SPFNeutral, mech[1:]
+	default:
+		return SPFPass, mech
+	}
+}
+
+// matchMechanism tests ip against a single (qualifier-stripped) SPF mechanism.
+// Returns (true, reason) if it matches, (false, "") otherwise.
+func (s *SPFChecker) matchMechanism(ctx context.Context, ip net.IP, domain, mech string) (bool, string) {
+	mechLower := strings.ToLower(mech)
+
+	switch {
+	case mechLower == "all":
+		return true, "matched: all"
+
+	case strings.HasPrefix(mechLower, "ip4:"):
+		cidr := mech[4:]
+		if s.matchIP(ip, cidr) {
+			return true, fmt.Sprintf("matched: ip4:%s", cidr)
+		}
+
+	case strings.HasPrefix(mechLower, "ip6:"):
+		cidr := mech[4:]
+		if s.matchIP(ip, cidr) {
+			return true, fmt.Sprintf("matched: ip6:%s", cidr)
+		}
+
+	case strings.HasPrefix(mechLower, "a"):
+		targetDomain := domain
+		if strings.HasPrefix(mechLower, "a:") {
+			targetDomain = mech[2:]
+		}
+		if s.matchA(ctx, ip, targetDomain) {
+			return true, fmt.Sprintf("matched: a:%s", targetDomain)
+		}
+
+	case strings.HasPrefix(mechLower, "mx"):
+		targetDomain := domain
+		if strings.HasPrefix(mechLower, "mx:") {
+			targetDomain = mech[3:]
+		}
+		if s.matchMX(ctx, ip, targetDomain) {
+			return true, fmt.Sprintf("matched: mx:%s", targetDomain)
+		}
+
+	case strings.HasPrefix(mechLower, "include:"):
+		includeDomain := mech[8:]
+		result, reason := s.CheckHost(ip.String(), includeDomain)
+		if result == SPFPass {
+			return true, fmt.Sprintf("matched: include:%s (%s)", includeDomain, reason)
+		}
+	}
+
+	return false, ""
 }
 
 // matchIP checks if the IP matches a CIDR notation or single IP.

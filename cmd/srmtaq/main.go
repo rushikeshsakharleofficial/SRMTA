@@ -37,6 +37,15 @@ const (
 	colorYellow = "\033[33m"
 	colorCyan   = "\033[36m"
 	colorGray   = "\033[90m"
+
+	// spoolDeadLetter is the canonical name for the dead-letter spool.
+	spoolDeadLetter = "dead-letter"
+
+	// fmtStatColor is the printf format for a colored stat line (label, color, value, reset).
+	fmtStatColor = "    %-20s %s%d%s\n"
+
+	// fmtStatPlain is the printf format for a plain (uncolored) stat line (label, value).
+	fmtStatPlain = "    %-20s %d\n"
 )
 
 // Message mirrors queue.Message fields we care about.
@@ -93,12 +102,12 @@ var (
 )
 
 var spoolColors = map[string]string{
-	"incoming":    colorCyan,
-	"active":      colorGreen,
-	"deferred":    colorYellow,
-	"retry":       colorYellow,
-	"dead-letter": colorRed,
-	"failed":      colorRed,
+	"incoming":      colorCyan,
+	"active":        colorGreen,
+	"deferred":      colorYellow,
+	"retry":         colorYellow,
+	spoolDeadLetter: colorRed,
+	"failed":        colorRed,
 }
 
 func main() {
@@ -162,7 +171,7 @@ func runSummary() {
 		{"incoming", countSpool("incoming") + q.Enqueued - q.Completed, "accepted, awaiting processing"},
 		{"deferred", countSpool("deferred"), "temporary failure, will retry"},
 		{"retry", countSpool("retry"), "queued for next retry attempt"},
-		{"dead-letter", countSpool("dead-letter"), "exhausted retries"},
+		{spoolDeadLetter, countSpool(spoolDeadLetter), "exhausted retries"},
 		{"failed", countSpool("failed"), "permanent failure"},
 	}
 
@@ -190,69 +199,18 @@ func runSummary() {
 // ── List messages ───────────────────────────────────────────────────────────
 
 func runList(spoolFilter string) {
-	spools := []string{"incoming", "active", "deferred", "retry", "dead-letter", "failed"}
+	spools := []string{"incoming", "active", "deferred", "retry", spoolDeadLetter, "failed"}
 	if spoolFilter != "" {
 		spools = []string{spoolFilter}
 	}
-
-	totalShown := 0
 
 	fmt.Printf("\n%s%sSRMTA Queue Listing%s  %s%s%s\n",
 		colorBold, colorCyan, colorReset,
 		colorGray, time.Now().Format("2006-01-02 15:04:05"), colorReset)
 
+	totalShown := 0
 	for _, spool := range spools {
-		messages := readSpool(spool)
-		if len(messages) == 0 {
-			continue
-		}
-
-		col := spoolColors[spool]
-		if col == "" {
-			col = colorCyan
-		}
-		fmt.Printf("\n%s%s── %s (%d)%s\n", colorBold, col, strings.ToUpper(spool), len(messages), colorReset)
-
-		tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "  ID\tSIZE\tFROM\tTO\tAGE\tRETRIES\tNEXT RETRY")
-		fmt.Fprintln(tw, "  ──\t────\t────\t──\t───\t───────\t──────────")
-
-		for _, msg := range messages {
-			to := ""
-			if len(msg.Recipients) > 0 {
-				to = msg.Recipients[0]
-				if len(msg.Recipients) > 1 {
-					to += fmt.Sprintf(" +%d", len(msg.Recipients)-1)
-				}
-			}
-
-			age := time.Since(msg.CreatedAt).Round(time.Second)
-			ageStr := formatAge(age)
-
-			nextRetry := "-"
-			if !msg.NextRetry.IsZero() && msg.RetryCount > 0 {
-				untilRetry := time.Until(msg.NextRetry).Round(time.Second)
-				if untilRetry > 0 {
-					nextRetry = "in " + formatAge(untilRetry)
-				} else {
-					nextRetry = colorGreen + "now" + colorReset
-				}
-			}
-
-			sizeStr := formatSize(msg.Size)
-			retryStr := fmt.Sprintf("%d", msg.RetryCount)
-
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				msg.ID, sizeStr, truncate(msg.Sender, 28), truncate(to, 28),
-				ageStr, retryStr, nextRetry)
-
-			if msg.LastError != "" {
-				fmt.Fprintf(tw, "  %s↳ %s%s\n", colorRed, truncate(msg.LastError, 60), colorReset)
-			}
-		}
-
-		tw.Flush()
-		totalShown += len(messages)
+		totalShown += printSpoolSection(spool)
 	}
 
 	if totalShown == 0 {
@@ -260,6 +218,70 @@ func runList(spoolFilter string) {
 	} else {
 		fmt.Printf("\n  Total: %s%d messages%s\n\n", colorBold, totalShown, colorReset)
 	}
+}
+
+// printSpoolSection prints one spool's messages and returns the count shown.
+func printSpoolSection(spool string) int {
+	messages := readSpool(spool)
+	if len(messages) == 0 {
+		return 0
+	}
+
+	col := spoolColors[spool]
+	if col == "" {
+		col = colorCyan
+	}
+	fmt.Printf("\n%s%s── %s (%d)%s\n", colorBold, col, strings.ToUpper(spool), len(messages), colorReset)
+
+	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tSIZE\tFROM\tTO\tAGE\tRETRIES\tNEXT RETRY")
+	fmt.Fprintln(tw, "  ──\t────\t────\t──\t───\t───────\t──────────")
+
+	for _, msg := range messages {
+		printMessageRow(tw, msg)
+	}
+
+	tw.Flush()
+	return len(messages)
+}
+
+// printMessageRow writes a single message row (and optional error line) to tw.
+func printMessageRow(tw *tabwriter.Writer, msg Message) {
+	to := formatRecipients(msg.Recipients)
+	ageStr := formatAge(time.Since(msg.CreatedAt).Round(time.Second))
+	nextRetry := formatNextRetry(msg)
+
+	fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+		msg.ID, formatSize(msg.Size), truncate(msg.Sender, 28), truncate(to, 28),
+		ageStr, msg.RetryCount, nextRetry)
+
+	if msg.LastError != "" {
+		fmt.Fprintf(tw, "  %s↳ %s%s\n", colorRed, truncate(msg.LastError, 60), colorReset)
+	}
+}
+
+// formatRecipients returns the primary recipient string with overflow count.
+func formatRecipients(rcpts []string) string {
+	if len(rcpts) == 0 {
+		return ""
+	}
+	to := rcpts[0]
+	if len(rcpts) > 1 {
+		to += fmt.Sprintf(" +%d", len(rcpts)-1)
+	}
+	return to
+}
+
+// formatNextRetry returns the human-readable next-retry string for a message.
+func formatNextRetry(msg Message) string {
+	if msg.NextRetry.IsZero() || msg.RetryCount == 0 {
+		return "-"
+	}
+	untilRetry := time.Until(msg.NextRetry).Round(time.Second)
+	if untilRetry > 0 {
+		return "in " + formatAge(untilRetry)
+	}
+	return colorGreen + "now" + colorReset
 }
 
 // ── Detailed Stats ──────────────────────────────────────────────────────────
@@ -277,37 +299,37 @@ func runStat() {
 		colorGray, strings.Repeat("─", 50)+colorReset)
 
 	fmt.Printf("%s  Queue%s\n", colorBold, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Enqueued total:", colorCyan, q.Enqueued, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Completed:", colorGreen, q.Completed, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Deferred:", colorYellow, q.Deferred, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Failed:", colorRed, q.Failed, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Dead letter:", colorRed, q.DeadLetter, colorReset)
+	fmt.Printf(fmtStatColor, "Enqueued total:", colorCyan, q.Enqueued, colorReset)
+	fmt.Printf(fmtStatColor, "Completed:", colorGreen, q.Completed, colorReset)
+	fmt.Printf(fmtStatColor, "Deferred:", colorYellow, q.Deferred, colorReset)
+	fmt.Printf(fmtStatColor, "Failed:", colorRed, q.Failed, colorReset)
+	fmt.Printf(fmtStatColor, "Dead letter:", colorRed, q.DeadLetter, colorReset)
 
 	fmt.Printf("\n%s  SMTP Connections%s\n", colorBold, colorReset)
-	fmt.Printf("    %-20s %d\n", "Total:", s.TotalConnections)
-	fmt.Printf("    %-20s %d\n", "Active now:", s.ActiveConnections)
-	fmt.Printf("    %-20s %s%d%s\n", "Rejected:", colorYellow, s.Rejected, colorReset)
+	fmt.Printf(fmtStatPlain, "Total:", s.TotalConnections)
+	fmt.Printf(fmtStatPlain, "Active now:", s.ActiveConnections)
+	fmt.Printf(fmtStatColor, "Rejected:", colorYellow, s.Rejected, colorReset)
 
 	fmt.Printf("\n%s  Delivery%s\n", colorBold, colorReset)
-	fmt.Printf("    %-20s %d\n", "Delivered:", d.Delivered)
+	fmt.Printf(fmtStatPlain, "Delivered:", d.Delivered)
 	fmt.Printf("    %-20s %dms\n", "Avg latency:", d.AvgLatencyMs)
 
 	fmt.Printf("\n%s  Auth%s\n", colorBold, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Successes:", colorGreen, a.Successes, colorReset)
-	fmt.Printf("    %-20s %s%d%s\n", "Failures:", colorRed, a.Failures, colorReset)
+	fmt.Printf(fmtStatColor, "Successes:", colorGreen, a.Successes, colorReset)
+	fmt.Printf(fmtStatColor, "Failures:", colorRed, a.Failures, colorReset)
 
 	fmt.Printf("\n%s  TLS%s\n", colorBold, colorReset)
-	fmt.Printf("    %-20s %d\n", "Connections:", tls.Connections)
-	fmt.Printf("    %-20s %s%d%s\n", "Handshake errors:", colorRed, tls.HandshakeErrors, colorReset)
+	fmt.Printf(fmtStatPlain, "Connections:", tls.Connections)
+	fmt.Printf(fmtStatColor, "Handshake errors:", colorRed, tls.HandshakeErrors, colorReset)
 
 	fmt.Printf("\n%s  Spool Files on Disk%s\n", colorBold, colorReset)
-	for _, sp := range []string{"incoming", "active", "deferred", "retry", "dead-letter", "failed"} {
+	for _, sp := range []string{"incoming", "active", "deferred", "retry", spoolDeadLetter, "failed"} {
 		n := countSpool(sp)
 		col := colorGray
 		if n > 0 {
 			col = spoolColors[sp]
 		}
-		fmt.Printf("    %-20s %s%d%s\n", sp+":", col, n, colorReset)
+		fmt.Printf(fmtStatColor, sp+":", col, n, colorReset)
 	}
 
 	fmt.Println()
@@ -394,28 +416,33 @@ func readSpool(spool string) []Message {
 		if !s.IsDir() {
 			continue
 		}
-		shardDir := filepath.Join(dir, s.Name())
-		entries, _ := os.ReadDir(shardDir)
-
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(shardDir, e.Name()))
-			if err != nil {
-				continue
-			}
-			var msg Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				continue
-			}
-			messages = append(messages, msg)
-		}
+		messages = append(messages, readShardMessages(filepath.Join(dir, s.Name()))...)
 	}
 
 	sort.Slice(messages, func(i, j int) bool {
 		return messages[i].CreatedAt.Before(messages[j].CreatedAt)
 	})
+	return messages
+}
+
+// readShardMessages reads all message metadata files from a single shard directory.
+func readShardMessages(shardDir string) []Message {
+	entries, _ := os.ReadDir(shardDir)
+	var messages []Message
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(shardDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		messages = append(messages, msg)
+	}
 	return messages
 }
 

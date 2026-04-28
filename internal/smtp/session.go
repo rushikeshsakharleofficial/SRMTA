@@ -136,12 +136,39 @@ func (s *Session) Handle(ctx context.Context) {
 			"correlation_id", s.correlationID)
 	}()
 
-	hostname := s.cfg.BannerHostname
-	if hostname == "" {
-		hostname = "srmta"
+	if !s.acceptConnection() {
+		return
 	}
 
-	// Check per-IP rate limit before accepting
+	s.sendGreeting()
+
+	for {
+		if ctx.Err() != nil {
+			s.writef("421 4.3.2 Service shutting down")
+			return
+		}
+
+		line, ok := s.readCommandLine()
+		if !ok {
+			return
+		}
+		if line == "" {
+			continue
+		}
+
+		s.cmdCount++
+		cmd, args := s.parseCommand(line)
+		metrics.SMTPCommandsTotal.WithLabelValues(cmd).Inc()
+
+		if quit := s.dispatchCommand(cmd, args); quit {
+			return
+		}
+	}
+}
+
+// acceptConnection checks rate limits and logs the connection open event.
+// Returns false if the connection should be rejected immediately.
+func (s *Session) acceptConnection() bool {
 	if s.rateLimiter != nil && !s.rateLimiter.Allow(s.remoteIP) {
 		s.writef("421 4.7.0 Too many connections from your IP, try again later")
 		s.logger.Warn("Rate limited connection",
@@ -150,98 +177,90 @@ func (s *Session) Handle(ctx context.Context) {
 			"remote", s.remoteAddr, "action", "reject",
 			"reason", "rate_limit", "correlation_id", s.correlationID)
 		metrics.ConnectionsRejected.Inc()
-		return
+		return false
 	}
-
 	s.logger.Access("SMTP connection opened",
 		"remote", s.remoteAddr, "action", "connect",
 		"correlation_id", s.correlationID)
 	s.logger.Debug("New SMTP session",
 		"remote", s.remoteAddr, "correlation_id", s.correlationID)
+	return true
+}
 
-	// Send greeting banner
+// sendGreeting sends the SMTP 220 banner.
+func (s *Session) sendGreeting() {
 	bannerHost := s.cfg.BannerHostname
 	if bannerHost == "" {
 		bannerHost = "srmta.local"
 	}
 	s.writef("220 %s ESMTP SRMTA Ready", bannerHost)
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			s.writef("421 4.3.2 Service shutting down")
-			return
-		default:
+// readCommandLine reads one command line from the client.
+// Returns (line, true) on success, ("", false) on connection close or fatal error.
+// Returns ("", true) for blank lines (caller should continue).
+func (s *Session) readCommandLine() (string, bool) {
+	s.conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
+
+	line, err := s.reader.ReadString('\n')
+	if err != nil {
+		if err != io.EOF {
+			s.logger.Debug("Read error",
+				"remote", s.remoteAddr, "correlation_id", s.correlationID, "error", err)
 		}
-
-		// Set read deadline
-		s.conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
-
-		line, err := s.reader.ReadString('\n')
-		if err != nil {
-			if err != io.EOF {
-				s.logger.Debug("Read error",
-					"remote", s.remoteAddr, "correlation_id", s.correlationID, "error", err)
-			}
-			return
-		}
-
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			continue
-		}
-
-		// Enforce command length limit per RFC 5321 §4.5.3.1.4
-		if len(line) > maxCommandLength {
-			s.writef("500 5.5.1 Command line too long")
-			continue
-		}
-
-		// Reject lines with embedded null bytes (injection prevention)
-		if strings.ContainsRune(line, 0) {
-			s.writef("500 5.5.1 Invalid characters in command")
-			s.logger.Warn("Null byte injection attempt",
-				"remote", s.remoteAddr, "correlation_id", s.correlationID)
-			continue
-		}
-
-		s.cmdCount++
-
-		// Parse command and arguments
-		cmd, args := s.parseCommand(line)
-
-		metrics.SMTPCommandsTotal.WithLabelValues(cmd).Inc()
-
-		switch cmd {
-		case "EHLO":
-			s.handleEHLO(args)
-		case "HELO":
-			s.handleHELO(args)
-		case "STARTTLS":
-			s.handleSTARTTLS()
-		case "AUTH":
-			s.handleAUTH(args)
-		case "MAIL":
-			s.handleMAIL(args)
-		case "RCPT":
-			s.handleRCPT(args)
-		case "DATA":
-			s.handleDATA()
-		case "RSET":
-			s.handleRSET()
-		case "NOOP":
-			s.writef("250 2.0.0 OK")
-		case "QUIT":
-			s.writef("221 2.0.0 Bye")
-			return
-		case "VRFY":
-			s.writef("252 2.5.1 Cannot verify user")
-		case "HELP":
-			s.writef("214 2.0.0 See RFC 5321")
-		default:
-			s.writef("502 5.5.1 Command not recognized")
-		}
+		return "", false
 	}
+
+	line = strings.TrimRight(line, "\r\n")
+
+	if len(line) > maxCommandLength {
+		s.writef("500 5.5.1 Command line too long")
+		return "", true
+	}
+
+	if strings.ContainsRune(line, 0) {
+		s.writef("500 5.5.1 Invalid characters in command")
+		s.logger.Warn("Null byte injection attempt",
+			"remote", s.remoteAddr, "correlation_id", s.correlationID)
+		return "", true
+	}
+
+	return line, true
+}
+
+// dispatchCommand routes a parsed SMTP command to its handler.
+// Returns true if the session should end (QUIT received).
+func (s *Session) dispatchCommand(cmd, args string) (quit bool) {
+	switch cmd {
+	case "EHLO":
+		s.handleEHLO(args)
+	case "HELO":
+		s.handleHELO(args)
+	case "STARTTLS":
+		s.handleSTARTTLS()
+	case "AUTH":
+		s.handleAUTH(args)
+	case "MAIL":
+		s.handleMAIL(args)
+	case "RCPT":
+		s.handleRCPT(args)
+	case "DATA":
+		s.handleDATA()
+	case "RSET":
+		s.handleRSET()
+	case "NOOP":
+		s.writef("250 2.0.0 OK")
+	case "QUIT":
+		s.writef("221 2.0.0 Bye")
+		return true
+	case "VRFY":
+		s.writef("252 2.5.1 Cannot verify user")
+	case "HELP":
+		s.writef("214 2.0.0 See RFC 5321")
+	default:
+		s.writef("502 5.5.1 Command not recognized")
+	}
+	return false
 }
 
 // parseCommand splits an SMTP command line into command and arguments.
@@ -573,46 +592,12 @@ func (s *Session) handleDATA() {
 
 	s.writef("354 Start mail input; end with <CRLF>.<CRLF>")
 
-	// Read message data until <CRLF>.<CRLF>
-	var buf bytes.Buffer
-	for {
-		s.conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
-		line, err := s.reader.ReadBytes('\n')
-		if err != nil {
-			s.logger.Error("Error reading DATA", "remote", s.remoteAddr, "error", err)
-			return
-		}
-
-		// Check for end-of-data marker
-		if bytes.Equal(bytes.TrimRight(line, "\r\n"), []byte(".")) {
-			break
-		}
-
-		// Dot-stuffing: remove leading dot per RFC 5321 §4.5.2
-		if len(line) > 1 && line[0] == '.' {
-			line = line[1:]
-		}
-
-		// Enforce message size limit
-		if buf.Len()+len(line) > int(s.cfg.MaxMessageSize) {
-			s.writef("552 5.3.4 Message size exceeds limit")
-			// Drain remaining data
-			for {
-				remaining, _ := s.reader.ReadBytes('\n')
-				if bytes.Equal(bytes.TrimRight(remaining, "\r\n"), []byte(".")) {
-					break
-				}
-			}
-			s.reset()
-			return
-		}
-
-		buf.Write(line)
+	data, ok := s.readMessageBody()
+	if !ok {
+		return
 	}
+	s.msgData = data
 
-	s.msgData = buf.Bytes()
-
-	// Enqueue the message
 	msgID, err := s.queue.Enqueue(s.mailFrom, s.rcptTo, s.msgData, s.remoteAddr)
 	if err != nil {
 		s.logger.Error("Failed to enqueue message", "error", err, "remote", s.remoteAddr)
@@ -638,6 +623,50 @@ func (s *Session) handleDATA() {
 
 	s.writef("250 2.0.0 OK: queued as %s", msgID)
 	s.reset()
+}
+
+// readMessageBody reads the SMTP DATA body until the <CRLF>.<CRLF> terminator.
+// Returns (data, true) on success. On size overflow it drains, resets, and returns
+// (nil, false). On read error it returns (nil, false).
+func (s *Session) readMessageBody() ([]byte, bool) {
+	var buf bytes.Buffer
+	for {
+		s.conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
+		line, err := s.reader.ReadBytes('\n')
+		if err != nil {
+			s.logger.Error("Error reading DATA", "remote", s.remoteAddr, "error", err)
+			return nil, false
+		}
+
+		if bytes.Equal(bytes.TrimRight(line, "\r\n"), []byte(".")) {
+			break
+		}
+
+		// Dot-stuffing: remove leading dot per RFC 5321 §4.5.2
+		if len(line) > 1 && line[0] == '.' {
+			line = line[1:]
+		}
+
+		if buf.Len()+len(line) > int(s.cfg.MaxMessageSize) {
+			s.writef("552 5.3.4 Message size exceeds limit")
+			s.drainDataBody()
+			s.reset()
+			return nil, false
+		}
+
+		buf.Write(line)
+	}
+	return buf.Bytes(), true
+}
+
+// drainDataBody reads and discards remaining DATA lines until the end-of-data marker.
+func (s *Session) drainDataBody() {
+	for {
+		remaining, _ := s.reader.ReadBytes('\n')
+		if bytes.Equal(bytes.TrimRight(remaining, "\r\n"), []byte(".")) {
+			return
+		}
+	}
 }
 
 // handleRSET resets the session state for a new transaction.

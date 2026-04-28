@@ -450,9 +450,6 @@ function logRoutes() {
     const { where, params } = buildLogFilters(request.query);
     params.push(limit);
 
-    reply.header('Content-Type', 'text/csv');
-    reply.header('Content-Disposition', `attachment; filename="srmta-logs-${Date.now()}.csv"`);
-
     let result;
     try {
       result = await pool.query(

@@ -535,23 +535,28 @@ func (m *Manager) scanForExpired() {
 	activeSpool := []SpoolType{SpoolActive, SpoolDeferred, SpoolRetry}
 	for _, spool := range activeSpool {
 		for i := 0; i < m.cfg.ShardCount; i++ {
-			dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf("shard-%03d", i))
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !strings.HasSuffix(entry.Name(), ".meta") {
-					continue
-				}
-				msg, err := m.loadMessage(filepath.Join(dir, entry.Name()))
-				if err != nil {
-					continue
-				}
-				if now.After(msg.ExpiresAt) {
-					m.DeadLetter(msg, "message expired")
-				}
-			}
+			m.expireShardMessages(spool, i, now)
+		}
+	}
+}
+
+// expireShardMessages checks one shard of one spool and dead-letters any expired messages.
+func (m *Manager) expireShardMessages(spool SpoolType, shardIdx int, now time.Time) {
+	dir := filepath.Join(m.spoolDirs[spool], fmt.Sprintf("shard-%03d", shardIdx))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		msg, err := m.loadMessage(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if now.After(msg.ExpiresAt) {
+			m.DeadLetter(msg, "message expired")
 		}
 	}
 }

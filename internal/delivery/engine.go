@@ -149,26 +149,11 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 
 	start := time.Now()
 
-	// Load message data from spool file
-	data, err := e.loadMessageData(msg)
+	data, err := e.prepareMessage(msg)
 	if err != nil {
-		e.logger.Error("Failed to load message data", "id", msg.ID, "error", err)
-		e.queue.Fail(msg, "failed to load message data: "+err.Error())
-		return
+		return // prepareMessage already called queue.Fail / queue.Defer
 	}
 
-	// Sign with DKIM
-	if e.dkimSigner != nil {
-		signedData, err := e.dkimSigner.Sign(data, msg.Sender)
-		if err != nil {
-			e.logger.Warn("DKIM signing failed", "id", msg.ID, "error", err)
-			// Continue without DKIM if signing fails
-		} else {
-			data = signedData
-		}
-	}
-
-	// Resolve MX for recipient domain
 	mxRecords, err := e.dns.LookupMX(msg.Domain)
 	if err != nil {
 		e.logger.Error("MX resolution failed", "id", msg.ID, "domain", msg.Domain, "error", err)
@@ -176,43 +161,75 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 		return
 	}
 
-	// Select sending IP — sender domain binding takes priority over pool selection
-	var selectedIP *ip.PoolIP
-	var senderRouteUsed string
-
-	if e.router != nil {
-		senderDomain := extractDomain(msg.Sender)
-		routeResult := e.router.ResolveFullPath(senderDomain, "", msg.Domain)
-		if routeResult != nil && len(routeResult.PrimaryIPs) > 0 {
-			// Use the first healthy IP from the sender/MX route
-			bestIP := routeResult.BestIP()
-			if bestIP != "" {
-				selectedIP = &ip.PoolIP{Address: bestIP}
-				senderRouteUsed = routeResult.ProviderName
-			}
-		}
-	}
-
-	if selectedIP == nil {
-		selectedIP = e.ipPool.SelectIP()
-	}
+	selectedIP := e.selectSendingIP(msg)
 	if selectedIP == nil {
 		e.logger.Error("No healthy IPs available", "id", msg.ID)
 		e.queue.Defer(msg, "no healthy IPs available")
 		return
 	}
 
-	if senderRouteUsed != "" {
-		e.logger.Debug("Sender route applied",
-			"id", msg.ID, "route", senderRouteUsed, "ip", selectedIP.Address)
+	lastResult, lastErr := e.attemptMXDelivery(msg, mxRecords, selectedIP, data, start)
+
+	// All MX hosts failed — record outcome
+	if lastResult != nil {
+		e.ipPool.RecordResult(selectedIP.Address, false, lastResult.ResponseCode, lastResult.TLSUsed, false)
+		e.handleDeliveryFailure(msg, lastResult.ResponseCode, lastResult.ResponseText)
+	} else if lastErr != nil {
+		e.ipPool.RecordResult(selectedIP.Address, false, 0, false, true)
+		e.handleDeliveryFailure(msg, 0, lastErr.Error())
+	}
+}
+
+// prepareMessage loads the raw message bytes and optionally DKIM-signs them.
+// On hard failure it calls queue.Fail and returns a non-nil error.
+func (e *Engine) prepareMessage(msg *queue.Message) ([]byte, error) {
+	data, err := e.loadMessageData(msg)
+	if err != nil {
+		e.logger.Error("Failed to load message data", "id", msg.ID, "error", err)
+		e.queue.Fail(msg, "failed to load message data: "+err.Error())
+		return nil, err
 	}
 
-	// Try MX hosts in priority order
-	var lastErr error
-	var lastResult *smtp.DeliveryResult
+	if e.dkimSigner != nil {
+		if signed, err := e.dkimSigner.Sign(data, msg.Sender); err != nil {
+			e.logger.Warn("DKIM signing failed", "id", msg.ID, "error", err)
+			// Continue without DKIM
+		} else {
+			data = signed
+		}
+	}
+	return data, nil
+}
 
+// selectSendingIP picks the outbound IP for this message.
+// Sender-domain binding takes priority; falls back to pool selection.
+func (e *Engine) selectSendingIP(msg *queue.Message) *ip.PoolIP {
+	if e.router != nil {
+		senderDomain := extractDomain(msg.Sender)
+		routeResult := e.router.ResolveFullPath(senderDomain, "", msg.Domain)
+		if routeResult != nil && len(routeResult.PrimaryIPs) > 0 {
+			if bestIP := routeResult.BestIP(); bestIP != "" {
+				e.logger.Debug("Sender route applied",
+					"id", msg.ID, "route", routeResult.ProviderName, "ip", bestIP)
+				return &ip.PoolIP{Address: bestIP}
+			}
+		}
+	}
+	return e.ipPool.SelectIP()
+}
+
+// attemptMXDelivery tries each MX host (and each recipient) in priority order.
+// On first successful delivery it records success and returns (nil, nil) — the
+// message is already marked complete. On full failure it returns the last result
+// or error so the caller can decide on retry/dead-letter.
+func (e *Engine) attemptMXDelivery(
+	msg *queue.Message,
+	mxRecords []*dns.MXRecord,
+	selectedIP *ip.PoolIP,
+	data []byte,
+	start time.Time,
+) (lastResult *smtp.DeliveryResult, lastErr error) {
 	for _, mx := range mxRecords {
-		// Check circuit breaker for this MX host
 		if !e.circuitBrk.AllowRequest(mx.Host) {
 			e.logger.Debug("Circuit breaker open, skipping MX",
 				"id", msg.ID, "mx", mx.Host,
@@ -228,16 +245,12 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 				lastErr = err
 				e.circuitBrk.RecordFailure(mx.Host)
 				e.logger.Debug("Delivery attempt failed",
-					"id", msg.ID,
-					"mx", mx.Host,
-					"recipient", logging.MaskEmail(recipient),
-					"error", err,
-				)
+					"id", msg.ID, "mx", mx.Host,
+					"recipient", logging.MaskEmail(recipient), "error", err)
 				continue
 			}
 
 			if result.Status == "delivered" {
-				// Success!
 				e.circuitBrk.RecordSuccess(mx.Host)
 				duration := time.Since(start)
 				e.logger.Info("Message delivered",
@@ -248,30 +261,16 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 					"tls", result.TLSUsed,
 					"duration_ms", duration.Milliseconds(),
 				)
-
-				// Record delivery event
 				e.recordEvent(msg, result, duration)
-
-				// Update IP health
 				e.ipPool.RecordResult(selectedIP.Address, true, result.ResponseCode, result.TLSUsed, false)
-
 				metrics.DeliveredTotal.Inc()
 				metrics.DeliveryDuration.Observe(duration.Seconds())
-
 				e.queue.Complete(msg)
-				return
+				return nil, nil
 			}
 		}
 	}
-
-	// All MX hosts failed
-	if lastResult != nil {
-		e.ipPool.RecordResult(selectedIP.Address, false, lastResult.ResponseCode, lastResult.TLSUsed, false)
-		e.handleDeliveryFailure(msg, lastResult.ResponseCode, lastResult.ResponseText)
-	} else if lastErr != nil {
-		e.ipPool.RecordResult(selectedIP.Address, false, 0, false, true)
-		e.handleDeliveryFailure(msg, 0, lastErr.Error())
-	}
+	return lastResult, lastErr
 }
 
 // handleDeliveryFailure processes a failed delivery attempt.

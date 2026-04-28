@@ -147,36 +147,38 @@ func (r *Router) ResolveSender(senderDomain string) *RouteResult {
 			FallbackIPs:  r.filterHealthy(r.fallback),
 		}
 
-		// Collect IPs from explicit list
-		var primaryIPs []string
-		primaryIPs = append(primaryIPs, sr.IPs...)
-
-		// Collect IPs from subnets by matching against pool IPs
-		for _, subnet := range sr.Subnets {
-			for _, poolIP := range r.allPoolIPs {
-				ip := net.ParseIP(poolIP)
-				if ip != nil && subnet.Contains(ip) {
-					primaryIPs = append(primaryIPs, poolIP)
-				}
-			}
-		}
-
-		// Deduplicate
-		seen := make(map[string]bool)
-		var deduped []string
-		for _, ip := range primaryIPs {
-			if !seen[ip] {
-				seen[ip] = true
-				deduped = append(deduped, ip)
-			}
-		}
-
-		result.PrimaryIPs = r.filterHealthy(deduped)
+		raw := r.collectSenderIPs(sr)
+		result.PrimaryIPs = r.filterHealthy(raw)
 		result.BackupIPs = r.filterHealthy(sr.BackupIPs)
 		return result
 	}
 
 	return nil
+}
+
+// collectSenderIPs gathers, subnet-expands, and deduplicates the IP list for a sender route.
+func (r *Router) collectSenderIPs(sr SenderRoute) []string {
+	var raw []string
+	raw = append(raw, sr.IPs...)
+
+	for _, subnet := range sr.Subnets {
+		for _, poolIP := range r.allPoolIPs {
+			ip := net.ParseIP(poolIP)
+			if ip != nil && subnet.Contains(ip) {
+				raw = append(raw, poolIP)
+			}
+		}
+	}
+
+	seen := make(map[string]bool, len(raw))
+	deduped := make([]string, 0, len(raw))
+	for _, ip := range raw {
+		if !seen[ip] {
+			seen[ip] = true
+			deduped = append(deduped, ip)
+		}
+	}
+	return deduped
 }
 
 // ResolveFullPath resolves IPs considering sender domain binding first,
@@ -339,8 +341,19 @@ func matchPattern(host, pattern string) bool {
 
 // ValidateConfig checks that a routing config is valid.
 func ValidateConfig(config RouterConfig) error {
+	if err := validateRoutes(config.Routes); err != nil {
+		return err
+	}
+	if len(config.FallbackIPs) == 0 {
+		return fmt.Errorf("no fallback IPs configured")
+	}
+	return validateSenderRoutes(config.SenderRoutes)
+}
+
+// validateRoutes checks provider route entries for required fields and uniqueness.
+func validateRoutes(routes []ProviderRoute) error {
 	seen := make(map[string]bool)
-	for _, route := range config.Routes {
+	for _, route := range routes {
 		if route.Name == "" {
 			return fmt.Errorf("route missing name")
 		}
@@ -356,12 +369,12 @@ func ValidateConfig(config RouterConfig) error {
 			return fmt.Errorf("route %q has no primary IPs", route.Name)
 		}
 	}
-	if len(config.FallbackIPs) == 0 {
-		return fmt.Errorf("no fallback IPs configured")
-	}
+	return nil
+}
 
-	// Validate sender routes
-	for _, sr := range config.SenderRoutes {
+// validateSenderRoutes checks sender-route entries for required fields and valid CIDRs.
+func validateSenderRoutes(senderRoutes []SenderRoute) error {
+	for _, sr := range senderRoutes {
 		if sr.Domain == "" {
 			return fmt.Errorf("sender_route missing domain")
 		}
@@ -374,6 +387,5 @@ func ValidateConfig(config RouterConfig) error {
 			}
 		}
 	}
-
 	return nil
 }

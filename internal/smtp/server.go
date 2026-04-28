@@ -69,14 +69,7 @@ func NewServer(cfg config.SMTPConfig, tlsCfgData config.TLSConfig, q *queue.Mana
 
 // Start begins accepting SMTP connections.
 func (s *Server) Start(ctx context.Context) error {
-	// Resolve listen address: InboundAddr > ListenAddr > default :25
-	listenAddr := s.cfg.InboundAddr
-	if listenAddr == "" {
-		listenAddr = s.cfg.ListenAddr
-	}
-	if listenAddr == "" {
-		listenAddr = ":25"
-	}
+	listenAddr := s.resolveListenAddr()
 
 	var err error
 	s.listener, err = net.Listen("tcp", listenAddr)
@@ -87,12 +80,10 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("SMTP server listening", "addr", listenAddr)
 
 	for {
-		// Check if we're shutting down
 		if atomic.LoadInt32(&s.stopping) == 1 {
 			return nil
 		}
 
-		// Set accept deadline so we can check for shutdown
 		if tcpListener, ok := s.listener.(*net.TCPListener); ok {
 			tcpListener.SetDeadline(time.Now().Add(1 * time.Second))
 		}
@@ -100,7 +91,7 @@ func (s *Server) Start(ctx context.Context) error {
 		conn, err := s.listener.Accept()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // Deadline exceeded, check shutdown again
+				continue
 			}
 			if atomic.LoadInt32(&s.stopping) == 1 {
 				return nil
@@ -109,37 +100,58 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		// Enforce connection limit
-		currentConns := atomic.LoadInt64(&s.connCount)
-		if currentConns >= int64(s.cfg.MaxConnections) {
-			s.logger.Warn("Connection limit reached, rejecting",
-				"current", currentConns,
-				"max", s.cfg.MaxConnections,
-				"remote", conn.RemoteAddr(),
-			)
-			conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
-			conn.Close()
-			metrics.ConnectionsRejected.Inc()
+		if !s.admitConnection(conn) {
 			continue
 		}
 
-		atomic.AddInt64(&s.connCount, 1)
-		metrics.ConnectionsActive.Set(float64(atomic.LoadInt64(&s.connCount)))
-		metrics.ConnectionsTotal.Inc()
-
-		// Handle connection in a new goroutine
-		s.sessions.Add(1)
-		go func() {
-			defer s.sessions.Done()
-			defer func() {
-				atomic.AddInt64(&s.connCount, -1)
-				metrics.ConnectionsActive.Set(float64(atomic.LoadInt64(&s.connCount)))
-			}()
-
-			session := NewSession(conn, s.cfg, s.tlsCfg, s.queue, s.logger, s.rateLimiter)
-			session.Handle(ctx)
-		}()
+		s.spawnSession(ctx, conn)
 	}
+}
+
+// resolveListenAddr returns the effective listen address: InboundAddr > ListenAddr > ":25".
+func (s *Server) resolveListenAddr() string {
+	if s.cfg.InboundAddr != "" {
+		return s.cfg.InboundAddr
+	}
+	if s.cfg.ListenAddr != "" {
+		return s.cfg.ListenAddr
+	}
+	return ":25"
+}
+
+// admitConnection enforces the connection limit. Returns false if the connection
+// was rejected (conn is closed by this method in that case).
+func (s *Server) admitConnection(conn net.Conn) bool {
+	currentConns := atomic.LoadInt64(&s.connCount)
+	if currentConns >= int64(s.cfg.MaxConnections) {
+		s.logger.Warn("Connection limit reached, rejecting",
+			"current", currentConns,
+			"max", s.cfg.MaxConnections,
+			"remote", conn.RemoteAddr(),
+		)
+		conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
+		conn.Close()
+		metrics.ConnectionsRejected.Inc()
+		return false
+	}
+	atomic.AddInt64(&s.connCount, 1)
+	metrics.ConnectionsActive.Set(float64(atomic.LoadInt64(&s.connCount)))
+	metrics.ConnectionsTotal.Inc()
+	return true
+}
+
+// spawnSession starts a goroutine to handle one accepted connection.
+func (s *Server) spawnSession(ctx context.Context, conn net.Conn) {
+	s.sessions.Add(1)
+	go func() {
+		defer s.sessions.Done()
+		defer func() {
+			atomic.AddInt64(&s.connCount, -1)
+			metrics.ConnectionsActive.Set(float64(atomic.LoadInt64(&s.connCount)))
+		}()
+		session := NewSession(conn, s.cfg, s.tlsCfg, s.queue, s.logger, s.rateLimiter)
+		session.Handle(ctx)
+	}()
 }
 
 // Stop initiates graceful shutdown of the SMTP server.

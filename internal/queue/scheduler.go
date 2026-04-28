@@ -118,47 +118,46 @@ func (s *Scheduler) Next() *Message {
 	now := time.Now()
 
 	for _, bucket := range s.buckets {
-		bucket.mu.Lock()
-
-		// Skip paused domains
-		if bucket.Paused && now.Before(bucket.PausedUntil) {
-			bucket.mu.Unlock()
-			continue
+		if msg := s.nextFromBucket(bucket, now); msg != nil {
+			return msg
 		}
-		if bucket.Paused && now.After(bucket.PausedUntil) {
-			bucket.Paused = false
-		}
-
-		// Check concurrency limit
-		if bucket.ActiveCount >= bucket.MaxConcurrent {
-			bucket.mu.Unlock()
-			continue
-		}
-
-		// Check rate limit
-		if bucket.RateLimit > 0 {
-			interval := time.Second / time.Duration(bucket.RateLimit)
-			if now.Sub(bucket.LastSend) < interval {
-				bucket.mu.Unlock()
-				continue
-			}
-		}
-
-		// Get next message from priority queue
-		if bucket.Queue.Len() == 0 {
-			bucket.mu.Unlock()
-			continue
-		}
-
-		item := heap.Pop(&bucket.Queue).(*ScheduleItem)
-		bucket.ActiveCount++
-		bucket.LastSend = now
-		bucket.mu.Unlock()
-
-		return item.Message
 	}
 
 	return nil
+}
+
+// nextFromBucket attempts to dequeue one message from bucket, enforcing pause,
+// concurrency, and rate-limit constraints. Returns nil if the bucket is not ready.
+func (s *Scheduler) nextFromBucket(bucket *DomainBucket, now time.Time) *Message {
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+
+	if bucket.Paused {
+		if now.Before(bucket.PausedUntil) {
+			return nil
+		}
+		bucket.Paused = false
+	}
+
+	if bucket.ActiveCount >= bucket.MaxConcurrent {
+		return nil
+	}
+
+	if bucket.RateLimit > 0 {
+		interval := time.Second / time.Duration(bucket.RateLimit)
+		if now.Sub(bucket.LastSend) < interval {
+			return nil
+		}
+	}
+
+	if bucket.Queue.Len() == 0 {
+		return nil
+	}
+
+	item := heap.Pop(&bucket.Queue).(*ScheduleItem)
+	bucket.ActiveCount++
+	bucket.LastSend = now
+	return item.Message
 }
 
 // Release marks a delivery attempt as complete, freeing a concurrency slot.

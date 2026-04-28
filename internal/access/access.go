@@ -71,34 +71,14 @@ func LoadIPsINI(path string) (*AccessList, error) {
 
 	acl := &AccessList{}
 
-	// Parse [ipv4]
-	if entries, ok := sections["ipv4"]; ok {
-		acl.IPv4 = entries
-		for _, entry := range entries {
-			if err := acl.addEntry(entry, path); err != nil {
-				return nil, err
-			}
-		}
+	if err := acl.loadIPSection(sections, "ipv4", &acl.IPv4, path); err != nil {
+		return nil, err
 	}
-
-	// Parse [ipv6]
-	if entries, ok := sections["ipv6"]; ok {
-		acl.IPv6 = entries
-		for _, entry := range entries {
-			if err := acl.addEntry(entry, path); err != nil {
-				return nil, err
-			}
-		}
+	if err := acl.loadIPSection(sections, "ipv6", &acl.IPv6, path); err != nil {
+		return nil, err
 	}
-
-	// Parse [relay]
-	if entries, ok := sections["relay"]; ok {
-		acl.Relay = entries
-		for _, entry := range entries {
-			if err := acl.addEntry(entry, path); err != nil {
-				return nil, err
-			}
-		}
+	if err := acl.loadIPSection(sections, "relay", &acl.Relay, path); err != nil {
+		return nil, err
 	}
 
 	if len(acl.IPv4) == 0 && len(acl.IPv6) == 0 && len(acl.Relay) == 0 {
@@ -106,6 +86,21 @@ func LoadIPsINI(path string) (*AccessList, error) {
 	}
 
 	return acl, nil
+}
+
+// loadIPSection reads entries for one INI section into dest and parses them into the access list.
+func (a *AccessList) loadIPSection(sections map[string][]string, key string, dest *[]string, path string) error {
+	entries, ok := sections[key]
+	if !ok {
+		return nil
+	}
+	*dest = entries
+	for _, entry := range entries {
+		if err := a.addEntry(entry, path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // addEntry parses a single IP or CIDR entry and adds it to the access list.
@@ -178,32 +173,7 @@ func parseINI(path string) (map[string][]string, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-
-		// Section header
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			currentSection = strings.ToLower(line[1 : len(line)-1])
-			if _, exists := sections[currentSection]; !exists {
-				sections[currentSection] = []string{}
-			}
-			continue
-		}
-
-		if currentSection == "" {
-			continue
-		}
-
-		// Strip inline comments
-		if idx := strings.IndexAny(line, "#;"); idx > 0 {
-			line = strings.TrimSpace(line[:idx])
-		}
-
-		if line != "" {
-			sections[currentSection] = append(sections[currentSection], line)
-		}
+		currentSection = processINILine(line, currentSection, sections)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -211,6 +181,38 @@ func parseINI(path string) (map[string][]string, error) {
 	}
 
 	return sections, nil
+}
+
+// processINILine handles one parsed INI line, updating sections and returning the (possibly new) section name.
+func processINILine(line, currentSection string, sections map[string][]string) string {
+	// Skip blank lines and comment-only lines
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		return currentSection
+	}
+
+	// Section header: [name]
+	if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+		name := strings.ToLower(line[1 : len(line)-1])
+		if _, exists := sections[name]; !exists {
+			sections[name] = []string{}
+		}
+		return name
+	}
+
+	// No active section yet — ignore the line
+	if currentSection == "" {
+		return currentSection
+	}
+
+	// Strip inline comments
+	if idx := strings.IndexAny(line, "#;"); idx > 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+
+	if line != "" {
+		sections[currentSection] = append(sections[currentSection], line)
+	}
+	return currentSection
 }
 
 // isValidDomain performs a basic domain name validation.

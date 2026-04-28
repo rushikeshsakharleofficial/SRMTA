@@ -108,56 +108,56 @@ func (c *Classifier) ClassifyAndRecord(messageID, sender, recipient string, code
 func (c *Classifier) classify(code int, text string) BounceType {
 	textLower := strings.ToLower(text)
 
-	// Check response code first
 	switch {
-	// Hard bounces - permanent failures
 	case code == 550:
-		if containsAny(textLower, []string{"does not exist", "no such user", "unknown user",
-			"invalid recipient", "rejected", "user unknown", "mailbox not found"}) {
-			return BounceHard
-		}
-		if containsAny(textLower, []string{"blocked", "blacklist", "denied", "spam",
-			"rejected for policy"}) {
-			return BounceBlock
-		}
-		return BounceHard
-
+		return classify550(textLower)
 	case code == 551:
 		return BounceHard
-
 	case code == 552:
-		if containsAny(textLower, []string{"mailbox full", "over quota", "quota exceeded",
-			"storage", "disk full"}) {
-			return BounceMailbox
-		}
-		return BounceSoft
-
+		return classify552(textLower)
 	case code == 553:
 		return BounceHard
-
 	case code == 554:
-		if containsAny(textLower, []string{"dmarc", "spf", "dkim", "policy"}) {
-			return BouncePolicy
-		}
-		if containsAny(textLower, []string{"spam", "blocked", "blacklist"}) {
-			return BounceBlock
-		}
-		return BounceHard
-
-	// Soft bounces - temporary failures
+		return classify554(textLower)
 	case code >= 400 && code < 500:
-		if containsAny(textLower, []string{"rate limit", "too many", "throttl"}) {
-			return BounceSoft
-		}
-		if containsAny(textLower, []string{"greylisting", "try again", "temporary"}) {
-			return BounceSoft
-		}
 		return BounceSoft
-
-	// Pattern-based classification for ambiguous codes
 	default:
 		return c.patternClassify(textLower)
 	}
+}
+
+// classify550 classifies a 550 response based on the response text.
+// Order matters: the first-match wins (e.g. "rejected" → BounceHard before
+// "rejected for policy" → BounceBlock is even tested).
+func classify550(textLower string) BounceType {
+	if containsAny(textLower, []string{"does not exist", "no such user", "unknown user",
+		"invalid recipient", "rejected", "user unknown", "mailbox not found"}) {
+		return BounceHard
+	}
+	if containsAny(textLower, []string{"blocked", "blacklist", "denied", "spam",
+		"rejected for policy"}) {
+		return BounceBlock
+	}
+	return BounceHard
+}
+
+// classify552 classifies a 552 response based on the response text.
+func classify552(textLower string) BounceType {
+	if containsAny(textLower, []string{"mailbox full", "over quota", "quota exceeded", "storage", "disk full"}) {
+		return BounceMailbox
+	}
+	return BounceSoft
+}
+
+// classify554 classifies a 554 response based on the response text.
+func classify554(textLower string) BounceType {
+	if containsAny(textLower, []string{"dmarc", "spf", "dkim", "policy"}) {
+		return BouncePolicy
+	}
+	if containsAny(textLower, []string{"spam", "blocked", "blacklist"}) {
+		return BounceBlock
+	}
+	return BounceHard
 }
 
 // Enhanced pattern rules for bounce classification
