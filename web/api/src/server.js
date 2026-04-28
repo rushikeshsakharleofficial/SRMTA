@@ -66,7 +66,7 @@ function csvEscape(value) {
   if (value === null || value === undefined) return '';
   const s = String(value);
   if (/[",\r\n]/.test(s)) {
-    return `"${s.replace(/"/g, '""')}"`;
+    return `"${s.replaceAll('"', '""')}"`;
   }
   return s;
 }

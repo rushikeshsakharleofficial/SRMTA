@@ -203,13 +203,7 @@ CREATE INDEX idx_audit_user ON audit_log (user_id);
 -- ============================================================================
 -- Retention Policy
 -- ============================================================================
--- For automated partition management, use MySQL events:
---
--- CREATE EVENT rotate_delivery_events
--- ON SCHEDULE EVERY 1 MONTH
--- DO BEGIN
---   ALTER TABLE delivery_events DROP PARTITION IF EXISTS p_oldest;
---   -- Add new partition for next month
--- END;
+-- For automated partition management, use a monthly MySQL EVENT that drops
+-- the oldest partition and adds a new one for the upcoming month.
 --
 -- Recommended retention: 90 days for events, 365 days for bounces/complaints

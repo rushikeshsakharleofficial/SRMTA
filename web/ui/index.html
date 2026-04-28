@@ -413,7 +413,6 @@
       for (let i = 0; i < bars; i++) {
         const delivered = Math.random() * 180 + 40;
         const bounced = Math.random() * 20 + 3;
-        const total = delivered + bounced;
 
         const barGroup = document.createElement('div');
         barGroup.style.cssText = `flex:1; display:flex; flex-direction:column-reverse; gap:1px; height:100%;`;
@@ -441,18 +440,25 @@
         { ip: '203.0.113.11', health: 0.85, sent: 120000, r4xx: 0.025, r5xx: 0.008, tls: 0.98, status: 'warming' },
         { ip: '203.0.113.12', health: 0.92, sent: 380000, r4xx: 0.018, r5xx: 0.005, tls: 0.99, status: 'healthy' },
         { ip: '2001:db8::1', health: 0.95, sent: 280000, r4xx: 0.015, r5xx: 0.004, tls: 0.99, status: 'healthy' },
-        { ip: '203.0.113.20', health: 0.0, sent: 0, r4xx: 0, r5xx: 0, tls: 0, status: 'disabled' },
+        { ip: '203.0.113.20', health: 0, sent: 0, r4xx: 0, r5xx: 0, tls: 0, status: 'disabled' },
       ];
 
       const tbody = document.getElementById('ip-table-body');
       tbody.innerHTML = ips.map(ip => {
-        const healthColor = ip.health > 0.9 ? 'var(--accent-green)' : ip.health > 0.7 ? 'var(--accent-orange)' : 'var(--accent-red)';
+        let healthColor;
+        if (ip.health > 0.9) {
+          healthColor = 'var(--accent-green)';
+        } else if (ip.health > 0.7) {
+          healthColor = 'var(--accent-orange)';
+        } else {
+          healthColor = 'var(--accent-red)';
+        }
         return `<tr>
           <td style="font-family:monospace; font-weight:500;">${ip.ip}</td>
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
               <div class="health-bar"><div class="health-fill" style="width:${ip.health*100}%; background:${healthColor};"></div></div>
-              <span style="font-size:12px; color:${healthColor};">${(ip.health*100).toFixed(0)}%</span>
+              <span style="font-size:12px; color:${healthColor};">${Math.round(ip.health*100)}%</span>
             </div>
           </td>
           <td>${formatNumber(ip.sent)}</td>
@@ -495,7 +501,7 @@
         { name: 'icloud.com', sent: 32000, rate: 97.8 },
         { name: 'fastmail.com', sent: 18000, rate: 99.5 },
         { name: 'aol.com', sent: 12000, rate: 95.2 },
-        { name: 'zoho.com', sent: 8500, rate: 98.0 },
+        { name: 'zoho.com', sent: 8500, rate: 98 },
       ];
 
       const container = document.getElementById('domain-container');
