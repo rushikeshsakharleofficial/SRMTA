@@ -1,5 +1,5 @@
 # Build artifacts
-srmta
+/srmta
 rpmbuild/
 debbuild/
 *.tar.gz

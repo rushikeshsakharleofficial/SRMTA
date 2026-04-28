@@ -38,33 +38,36 @@ type Engine struct {
 	circuitBrk *CircuitBreakerManager
 }
 
+// EngineConfig bundles all dependencies required to construct an Engine.
+type EngineConfig struct {
+	Cfg          config.DeliveryConfig
+	Hostname     string
+	Queue        *queue.Manager
+	DNSResolver  *dns.Resolver
+	IPPool       *ip.Pool
+	Router       *routing.Router
+	DKIMSigner   *dkim.Signer
+	Bouncer      *bounce.Classifier
+	DB           store.Database
+	OutboundPort int
+	Logger       *logging.Logger
+}
+
 // NewEngine creates a new delivery engine.
-func NewEngine(
-	cfg config.DeliveryConfig,
-	hostname string,
-	q *queue.Manager,
-	dnsResolver *dns.Resolver,
-	ipPool *ip.Pool,
-	router *routing.Router,
-	dkimSigner *dkim.Signer,
-	bouncer *bounce.Classifier,
-	db store.Database,
-	outboundPort int,
-	logger *logging.Logger,
-) *Engine {
+func NewEngine(ecfg EngineConfig) *Engine {
 	return &Engine{
-		cfg:        cfg,
-		hostname:   hostname,
-		queue:      q,
-		dns:        dnsResolver,
-		ipPool:     ipPool,
-		router:     router,
-		dkimSigner: dkimSigner,
-		bouncer:    bouncer,
-		db:         db,
-		logger:     logger,
-		client:     smtp.NewClient(cfg, outboundPort, hostname, logger),
-		scheduler:  queue.NewScheduler(cfg.PerDomainConcurrency, 0),
+		cfg:        ecfg.Cfg,
+		hostname:   ecfg.Hostname,
+		queue:      ecfg.Queue,
+		dns:        ecfg.DNSResolver,
+		ipPool:     ecfg.IPPool,
+		router:     ecfg.Router,
+		dkimSigner: ecfg.DKIMSigner,
+		bouncer:    ecfg.Bouncer,
+		db:         ecfg.DB,
+		logger:     ecfg.Logger,
+		client:     smtp.NewClient(ecfg.Cfg, ecfg.OutboundPort, ecfg.Hostname, ecfg.Logger),
+		scheduler:  queue.NewScheduler(ecfg.Cfg.PerDomainConcurrency, 0),
 		circuitBrk: NewCircuitBreakerManager(5, 30*time.Second),
 	}
 }

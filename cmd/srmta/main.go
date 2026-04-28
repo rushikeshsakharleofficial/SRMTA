@@ -133,19 +133,19 @@ func main() {
 	router.SetPoolIPs(poolIPs)
 
 	// ── Initialize Delivery Engine ──────────────────────────────────────
-	deliveryEngine := delivery.NewEngine(
-		cfg.Delivery,
-		cfg.Server.Hostname,
-		queueManager,
-		dnsResolver,
-		ipPool,
-		router,
-		dkimSigner,
-		bounceClassifier,
-		dbStore,
-		cfg.SMTP.OutboundPort,
-		logger,
-	)
+	deliveryEngine := delivery.NewEngine(delivery.EngineConfig{
+		Cfg:          cfg.Delivery,
+		Hostname:     cfg.Server.Hostname,
+		Queue:        queueManager,
+		DNSResolver:  dnsResolver,
+		IPPool:       ipPool,
+		Router:       router,
+		DKIMSigner:   dkimSigner,
+		Bouncer:      bounceClassifier,
+		DB:           dbStore,
+		OutboundPort: cfg.SMTP.OutboundPort,
+		Logger:       logger,
+	})
 
 	// ── Initialize SMTP Server ──────────────────────────────────────────
 	smtpServer := smtp.NewServer(cfg.SMTP, cfg.TLS, queueManager, logger)

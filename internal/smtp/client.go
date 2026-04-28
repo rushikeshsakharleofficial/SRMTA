@@ -75,7 +75,7 @@ func NewClient(cfg config.DeliveryConfig, outboundPort int, hostname string, log
 }
 
 // Deliver sends a message to the specified MX host.
-func (c *Client) Deliver(mxHost string, localIP string, from string, to string, data []byte) (*DeliveryResult, error) {
+func (c *Client) Deliver(mxHost, localIP, from, to string, data []byte) (*DeliveryResult, error) {
 	start := time.Now()
 
 	result := &DeliveryResult{
@@ -108,7 +108,7 @@ func (c *Client) Deliver(mxHost string, localIP string, from string, to string, 
 }
 
 // getConnection retrieves a pooled connection or creates a new one.
-func (c *Client) getConnection(mxHost string, localIP string) (*smtpConn, error) {
+func (c *Client) getConnection(mxHost, localIP string) (*smtpConn, error) {
 	c.mu.RLock()
 	pool, exists := c.pools[mxHost]
 	c.mu.RUnlock()
@@ -133,7 +133,7 @@ func (c *Client) getConnection(mxHost string, localIP string) (*smtpConn, error)
 }
 
 // dial creates a new SMTP connection to the MX host.
-func (c *Client) dial(mxHost string, localIP string) (*smtpConn, error) {
+func (c *Client) dial(mxHost, localIP string) (*smtpConn, error) {
 	// Resolve local address for binding
 	var localAddr net.Addr
 	if localIP != "" {

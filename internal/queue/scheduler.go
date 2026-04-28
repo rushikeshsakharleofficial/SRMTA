@@ -75,7 +75,7 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new delivery scheduler.
-func NewScheduler(defaultConcurrency int, defaultRate int) *Scheduler {
+func NewScheduler(defaultConcurrency, defaultRate int) *Scheduler {
 	return &Scheduler{
 		buckets:     make(map[string]*DomainBucket),
 		defaultConc: defaultConcurrency,

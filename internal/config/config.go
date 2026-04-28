@@ -423,6 +423,14 @@ func mergeSMTP(dst, src *Config) {
 	if src.SMTP.BannerHostname != "" {
 		dst.SMTP.BannerHostname = src.SMTP.BannerHostname
 	}
+	mergeAllowedFiles(dst, src)
+	if src.SMTP.EnablePipelining {
+		dst.SMTP.EnablePipelining = true
+	}
+}
+
+// mergeAllowedFiles merges the access-control list fields (allowed domains/IPs) from src into dst.
+func mergeAllowedFiles(dst, src *Config) {
 	if len(src.SMTP.AllowedDomains) > 0 {
 		dst.SMTP.AllowedDomains = src.SMTP.AllowedDomains
 	}
@@ -431,9 +439,6 @@ func mergeSMTP(dst, src *Config) {
 	}
 	if src.SMTP.AllowedIPsFile != "" {
 		dst.SMTP.AllowedIPsFile = src.SMTP.AllowedIPsFile
-	}
-	if src.SMTP.EnablePipelining {
-		dst.SMTP.EnablePipelining = true
 	}
 }
 

@@ -123,7 +123,7 @@ func (p *PipelinedDelivery) readPipelineResponse() (int, string, error) {
 }
 
 // SupportsExtension checks if a specific ESMTP extension was advertised.
-func SupportsExtension(ehloResponse string, extension string) bool {
+func SupportsExtension(ehloResponse, extension string) bool {
 	lines := strings.Split(ehloResponse, "\n")
 	extension = strings.ToUpper(extension)
 	for _, line := range lines {

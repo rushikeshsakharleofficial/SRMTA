@@ -63,36 +63,54 @@ type Message struct {
 	LastError  string    `json:"last_error,omitempty"`
 }
 
+// QueueStats holds queue subsystem counters from the health endpoint.
+type QueueStats struct {
+	Enqueued   int `json:"enqueued"`
+	Completed  int `json:"completed"`
+	Deferred   int `json:"deferred"`
+	Failed     int `json:"failed"`
+	DeadLetter int `json:"dead_letter"`
+}
+
+// SMTPStats holds SMTP connection counters from the health endpoint.
+type SMTPStats struct {
+	TotalConnections  int `json:"total_connections"`
+	ActiveConnections int `json:"active_connections"`
+	Rejected          int `json:"rejected"`
+}
+
+// DeliveryStats holds delivery counters from the health endpoint.
+type DeliveryStats struct {
+	Delivered    int   `json:"delivered"`
+	AvgLatencyMs int64 `json:"avg_latency_ms"`
+}
+
+// AuthStats holds authentication counters from the health endpoint.
+type AuthStats struct {
+	Successes int `json:"successes"`
+	Failures  int `json:"failures"`
+}
+
+// TLSStats holds TLS counters from the health endpoint.
+type TLSStats struct {
+	Connections     int `json:"connections"`
+	HandshakeErrors int `json:"handshake_errors"`
+}
+
+// SubsystemStats groups per-subsystem stats from the health endpoint.
+type SubsystemStats struct {
+	Queue    QueueStats    `json:"queue"`
+	SMTP     SMTPStats     `json:"smtp"`
+	Delivery DeliveryStats `json:"delivery"`
+	Auth     AuthStats     `json:"auth"`
+	TLS      TLSStats      `json:"tls"`
+}
+
 // HealthFull mirrors the /health/full response.
 type HealthFull struct {
-	Service    string `json:"service"`
-	Status     string `json:"status"`
-	Subsystems struct {
-		Queue struct {
-			Enqueued   int `json:"enqueued"`
-			Completed  int `json:"completed"`
-			Deferred   int `json:"deferred"`
-			Failed     int `json:"failed"`
-			DeadLetter int `json:"dead_letter"`
-		} `json:"queue"`
-		SMTP struct {
-			TotalConnections  int `json:"total_connections"`
-			ActiveConnections int `json:"active_connections"`
-			Rejected          int `json:"rejected"`
-		} `json:"smtp"`
-		Delivery struct {
-			Delivered    int   `json:"delivered"`
-			AvgLatencyMs int64 `json:"avg_latency_ms"`
-		} `json:"delivery"`
-		Auth struct {
-			Successes int `json:"successes"`
-			Failures  int `json:"failures"`
-		} `json:"auth"`
-		TLS struct {
-			Connections     int `json:"connections"`
-			HandshakeErrors int `json:"handshake_errors"`
-		} `json:"tls"`
-	} `json:"subsystems"`
+	Service    string         `json:"service"`
+	Status     string         `json:"status"`
+	Subsystems SubsystemStats `json:"subsystems"`
 }
 
 var (

@@ -90,13 +90,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			}
-			if atomic.LoadInt32(&s.stopping) == 1 {
+			if s.handleAcceptError(err) {
 				return nil
 			}
-			s.logger.Error("Accept error", "error", err)
 			continue
 		}
 
@@ -106,6 +102,19 @@ func (s *Server) Start(ctx context.Context) error {
 
 		s.spawnSession(ctx, conn)
 	}
+}
+
+// handleAcceptError processes an error from listener.Accept.
+// Returns true if the server loop should stop, false if it should continue.
+func (s *Server) handleAcceptError(err error) bool {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return false
+	}
+	if atomic.LoadInt32(&s.stopping) == 1 {
+		return true
+	}
+	s.logger.Error("Accept error", "error", err)
+	return false
 }
 
 // resolveListenAddr returns the effective listen address: InboundAddr > ListenAddr > ":25".
