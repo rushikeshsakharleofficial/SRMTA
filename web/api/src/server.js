@@ -22,14 +22,14 @@ if (!process.env.WEBHOOK_SECRET) {
 }
 
 const config = {
-  port: parseInt(process.env.API_PORT || '3000'),
+  port: Number.parseInt(process.env.API_PORT || '3000'),
   host: process.env.API_HOST || '0.0.0.0',
   jwtSecret: process.env.JWT_SECRET,
   webhookSecret: process.env.WEBHOOK_SECRET,
   allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean),
   db: {
     host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432'),
+    port: Number.parseInt(process.env.DB_PORT || '5432'),
     user: process.env.DB_USER || 'srmta',
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'srmta',
@@ -51,7 +51,7 @@ function maskEmail(email) {
   const [user, domain] = email.split('@');
   if (user.length <= 1) return `*@${domain}`;
   if (user.length === 2) return `${user[0]}*@${domain}`;
-  return `${user[0]}***${user[user.length - 1]}@${domain}`;
+  return `${user[0]}***${user.at(-1)}@${domain}`;
 }
 
 /**
@@ -95,6 +95,7 @@ function authDecorator() {
     try {
       await request.jwtVerify();
     } catch (err) {
+      request.log.warn({ err }, 'jwt_verify_failed');
       reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or expired token' });
     }
   });
@@ -169,13 +170,13 @@ function sendRoutes() {
   fastify.post('/api/send', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
   }, async (request, reply) => {
-    const { from, to, subject, body, html } = request.body || {};
+    const { from, to, subject } = request.body || {};
 
     if (!from || !to || !subject) {
       return reply.code(400).send({ error: 'from, to, and subject are required' });
     }
 
-    const crypto = require('crypto');
+    const crypto = require('node:crypto');
     const messageId = crypto.randomUUID();
 
     // TODO: Enqueue to SMTP engine via Redis
@@ -202,7 +203,7 @@ function sendRoutes() {
       return reply.code(400).send({ error: `Maximum ${MAX_BULK_SIZE} messages per batch` });
     }
 
-    const crypto = require('crypto');
+    const crypto = require('node:crypto');
     const results = messages.map((msg, idx) => ({
       index: idx,
       message_id: crypto.randomUUID(),
@@ -217,13 +218,13 @@ function sendRoutes() {
   fastify.post('/api/schedule', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
   }, async (request, reply) => {
-    const { from, to, subject, body, send_at } = request.body || {};
+    const { from, to, subject, send_at } = request.body || {};
 
     if (!from || !to || !subject || !send_at) {
       return reply.code(400).send({ error: 'from, to, subject, and send_at are required' });
     }
 
-    const crypto = require('crypto');
+    const crypto = require('node:crypto');
     const messageId = `sched-${crypto.randomUUID()}`;
 
     return {
@@ -311,7 +312,7 @@ function webhookRoutes() {
       return reply.code(401).send({ error: 'Missing webhook signature' });
     }
 
-    const crypto = require('crypto');
+    const crypto = require('node:crypto');
     const bodyStr = JSON.stringify(request.body);
     const expectedSig = crypto
       .createHmac('sha256', config.webhookSecret)
@@ -340,8 +341,7 @@ function logRoutes() {
   fastify.get('/api/logs/export', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
   }, async (request, reply) => {
-    const { from, to, status, sender } = request.query;
-    const limit = Math.min(parseInt(request.query.limit) || 10000, 50000);
+    const limit = Math.min(Number.parseInt(request.query.limit) || 10000, 50000);
 
     // TODO: Query PostgreSQL for delivery events and stream as CSV
     reply.header('Content-Type', 'text/csv');
@@ -355,9 +355,8 @@ function logRoutes() {
   fastify.get('/api/logs', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
   }, async (request) => {
-    const { status, sender, recipient } = request.query;
-    const page = Math.max(1, parseInt(request.query.page) || 1);
-    const per_page = Math.min(Math.max(1, parseInt(request.query.per_page) || 50), 200);
+    const page = Math.max(1, Number.parseInt(request.query.page) || 1);
+    const per_page = Math.min(Math.max(1, Number.parseInt(request.query.per_page) || 50), 200);
 
     // TODO: Query PostgreSQL
     return {
@@ -440,6 +439,7 @@ function websocketRoutes() {
           }));
         }
       } catch (e) {
+        fastify.log.warn({ err: e }, 'ws_invalid_json');
         socket.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
       }
     });

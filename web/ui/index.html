@@ -354,7 +354,7 @@
 
   <script>
     // ── Configuration ───────────────────────────────────────────────────
-    const API_BASE = window.location.origin;
+    const API_BASE = globalThis.location.origin;
     let ws = null;
 
     // ── Simulated Data (replace with real API calls) ─────────────────
@@ -516,8 +516,8 @@
     // ── WebSocket Connection ────────────────────────────────────────────
     function connectWebSocket() {
       try {
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        const wsProtocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${wsProtocol}//${globalThis.location.host}/ws`);
         ws.onopen = () => console.log('WebSocket connected');
         ws.onmessage = (e) => {
           const data = JSON.parse(e.data);
@@ -526,8 +526,8 @@
           }
         };
         ws.onclose = () => setTimeout(connectWebSocket, 5000);
-        ws.onerror = () => {};
-      } catch(e) {}
+        ws.onerror = (err) => console.error('WebSocket error:', err);
+      } catch (e) { console.error('WebSocket connect failed:', e); }
     }
 
     // ── Export ─────────────────────────────────────────────────────────
