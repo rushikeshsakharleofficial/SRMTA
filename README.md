@@ -266,15 +266,34 @@ cd web/api && npm install
 export JWT_SECRET=$(openssl rand -hex 32)
 export WEBHOOK_SECRET=$(openssl rand -hex 32)
 export DB_PASSWORD="your-db-password"
+export REDIS_PASSWORD="your-redis-password"
 export ALLOWED_ORIGINS="https://your-admin-domain.com"
 
 npm start
 # Listens on :3000 by default
 ```
 
-Endpoints: `/api/auth/*`, `/api/send`, `/api/bulk`, `/api/schedule`, `/api/status/:id`, `/api/metrics`, `/api/webhook`, `/api/logs/*`, `/api/queue/*`, `/api/ips`, `/api/domains/*`
+All routes backed by PostgreSQL. `api_users` table stores credentials (bcrypt). Routes require JWT + RBAC (`admin`/`operator`/`viewer`).
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `POST /api/auth/login` | public | Returns JWT (30m expiry) |
+| `GET /api/auth/me` | JWT | Current user info |
+| `POST /api/send` | operator+ | Queue single message |
+| `POST /api/bulk` | operator+ | Queue up to 1,000 messages |
+| `POST /api/schedule` | operator+ | Schedule a message |
+| `GET /api/status/:id` | operator+ | Delivery event status from DB |
+| `GET /api/metrics` | operator+ | Aggregated delivery stats (last 24h) |
+| `GET /api/logs` | operator+ | Paginated delivery logs (max 200/page) |
+| `GET /api/logs/export` | operator+ | CSV export (max 50,000 rows) |
+| `GET /api/queue/stats` | JWT | Queue spool depths |
+| `GET /api/ips` | JWT | IP pool health snapshots |
+| `POST /api/webhook` | HMAC | FBL/delivery status webhook |
+| `GET /ws` | JWT | WebSocket live metrics feed |
 
 OpenAPI spec: `web/api/openapi.yaml`
+
+> **Note:** `/api/send`, `/api/bulk`, `/api/schedule` generate message IDs but Redis/SMTP enqueue integration is pending.
 
 ## Dashboard
 
@@ -313,6 +332,21 @@ Import `grafana/dashboard.json` — 12 pre-built panels for delivery rate, queue
               │            │  │  IP pool)│  │          │  │            │
               └────────────┘  └──────────┘  └──────────┘  └────────────┘
 ```
+
+## Code Quality
+
+SonarCloud quality gate: **A** on all axes.
+
+| Metric | Status |
+|---|---|
+| Security rating | A |
+| Reliability rating | A |
+| Bugs | 0 |
+| Vulnerabilities | 0 |
+| Security hotspots | 0 |
+| Code smells | ~1 (wontfix) |
+
+Branch protection enabled on `master` — force push and deletion blocked.
 
 ## License
 

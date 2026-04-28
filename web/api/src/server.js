@@ -6,6 +6,7 @@
 
 const fastify = require('fastify')({ logger: true });
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 
 // ── Configuration ─────────────────────────────────────────────────────────
 // Fail fast if critical secrets are not configured
@@ -135,7 +136,7 @@ function authDecorator() {
     return async function (request, reply) {
       await request.jwtVerify();
       if (!roles.includes(request.user.role)) {
-        reply.code(403).send({ error: 'Forbidden', message: 'Insufficient permissions' });
+        return reply.code(403).send({ error: 'Forbidden', message: 'Insufficient permissions' });
       }
     };
   });
@@ -162,7 +163,6 @@ function authRoutes() {
     }
 
     // Validate against database
-    const bcrypt = require('bcryptjs');
     try {
       const result = await pool.query(
         'SELECT id, username, password_hash, role FROM api_users WHERE username = $1',
