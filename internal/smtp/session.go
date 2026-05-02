@@ -668,7 +668,11 @@ func (s *Session) readMessageBody() ([]byte, bool) {
 // drainDataBody reads and discards remaining DATA lines until the end-of-data marker.
 func (s *Session) drainDataBody() {
 	for {
-		remaining, _ := s.reader.ReadBytes('\n')
+		s.conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
+		remaining, err := s.reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
 		if bytes.Equal(bytes.TrimRight(remaining, "\r\n"), []byte(".")) {
 			return
 		}

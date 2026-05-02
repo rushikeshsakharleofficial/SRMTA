@@ -112,6 +112,10 @@ func NewManager(cfg config.QueueConfig, redis *store.RedisStore, db store.Databa
 
 // Enqueue adds a new message to the incoming spool.
 func (m *Manager) Enqueue(sender string, recipients []string, data []byte, remoteAddr string) (string, error) {
+	if len(recipients) == 0 {
+		return "", fmt.Errorf("at least one recipient is required")
+	}
+
 	// Check queue depth limit
 	if atomic.LoadInt64(&m.depth) >= m.cfg.MaxQueueDepth {
 		return "", fmt.Errorf("queue depth limit exceeded (%d)", m.cfg.MaxQueueDepth)
@@ -230,7 +234,10 @@ func (m *Manager) processLoop(ctx context.Context, workerID int) {
 				return
 			}
 			// Move from incoming to active
-			m.moveSpool(msg, SpoolActive)
+			if err := m.moveSpool(msg, SpoolActive); err != nil {
+				m.logger.Error("Failed to activate message", "id", msg.ID, "error", err)
+				continue
+			}
 			metrics.QueueProcessing.Inc()
 
 			// The delivery engine will pick up active messages
@@ -291,7 +298,9 @@ func (m *Manager) Defer(msg *Message, reason string) error {
 		return m.DeadLetter(msg, "max retries exceeded")
 	}
 
-	m.moveSpool(msg, SpoolDeferred)
+	if err := m.moveSpool(msg, SpoolDeferred); err != nil {
+		return err
+	}
 	metrics.QueueDeferred.Inc()
 
 	m.logger.Info("Message deferred",
@@ -309,7 +318,9 @@ func (m *Manager) DeadLetter(msg *Message, reason string) error {
 	msg.LastError = reason
 	msg.UpdatedAt = time.Now()
 
-	m.moveSpool(msg, SpoolDeadLetter)
+	if err := m.moveSpool(msg, SpoolDeadLetter); err != nil {
+		return err
+	}
 	metrics.QueueDeadLetter.Inc()
 
 	m.logger.Warn("Message dead-lettered",
@@ -328,7 +339,9 @@ func (m *Manager) Fail(msg *Message, reason string) error {
 	msg.LastError = reason
 	msg.UpdatedAt = time.Now()
 
-	m.moveSpool(msg, SpoolFailed)
+	if err := m.moveSpool(msg, SpoolFailed); err != nil {
+		return err
+	}
 	atomic.AddInt64(&m.depth, -1)
 	metrics.QueueFailed.Inc()
 
@@ -345,7 +358,9 @@ func (m *Manager) Fail(msg *Message, reason string) error {
 // Complete marks a message as successfully delivered and removes it from the spool.
 func (m *Manager) Complete(msg *Message) error {
 	// Remove spool files
-	m.removeFromSpool(msg)
+	if err := m.removeFromSpool(msg); err != nil {
+		return err
+	}
 	atomic.AddInt64(&m.depth, -1)
 	metrics.QueueCompleted.Inc()
 	metrics.QueueDepth.WithLabelValues(string(msg.Spool)).Dec()
@@ -432,9 +447,8 @@ func (m *Manager) writeToSpool(msg *Message) error {
 }
 
 // moveSpool moves a message between spool tiers.
-func (m *Manager) moveSpool(msg *Message, target SpoolType) {
+func (m *Manager) moveSpool(msg *Message, target SpoolType) error {
 	oldSpool := msg.Spool
-	msg.Spool = target
 
 	// Move files
 	oldDir := filepath.Join(m.spoolDirs[oldSpool], fmt.Sprintf(shardDirFmt, msg.ShardID))
@@ -442,15 +456,33 @@ func (m *Manager) moveSpool(msg *Message, target SpoolType) {
 
 	oldData := filepath.Join(oldDir, msg.ID+".msg")
 	newData := filepath.Join(newDir, msg.ID+".msg")
-	os.Rename(oldData, newData)
+	if err := os.Rename(oldData, newData); err != nil {
+		return fmt.Errorf("move data spool file: %w", err)
+	}
 	msg.DataPath = newData
 
 	// Update metadata in new location
-	metaData, _ := json.Marshal(msg)
-	os.WriteFile(filepath.Join(newDir, msg.ID+".meta"), metaData, 0640)
+	updated := *msg
+	updated.Spool = target
+	metaData, err := json.Marshal(&updated)
+	if err != nil {
+		_ = os.Rename(newData, oldData)
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+	newMetaPath := filepath.Join(newDir, msg.ID+".meta")
+	if err := os.WriteFile(newMetaPath, metaData, 0640); err != nil {
+		_ = os.Rename(newData, oldData)
+		return fmt.Errorf("write metadata: %w", err)
+	}
 
 	// Remove old metadata
-	os.Remove(filepath.Join(oldDir, msg.ID+".meta"))
+	if err := os.Remove(filepath.Join(oldDir, msg.ID+".meta")); err != nil {
+		_ = os.Remove(newMetaPath)
+		_ = os.Rename(newData, oldData)
+		return fmt.Errorf("remove old metadata: %w", err)
+	}
+
+	msg.Spool = target
 
 	metrics.QueueDepth.WithLabelValues(string(oldSpool)).Dec()
 	metrics.QueueDepth.WithLabelValues(string(target)).Inc()
@@ -458,13 +490,20 @@ func (m *Manager) moveSpool(msg *Message, target SpoolType) {
 	if m.cfg.JournalEnabled {
 		m.writeJournal("move:"+string(target), msg)
 	}
+
+	return nil
 }
 
 // removeFromSpool removes message files from the spool.
-func (m *Manager) removeFromSpool(msg *Message) {
+func (m *Manager) removeFromSpool(msg *Message) error {
 	dir := filepath.Join(m.spoolDirs[msg.Spool], fmt.Sprintf(shardDirFmt, msg.ShardID))
-	os.Remove(filepath.Join(dir, msg.ID+".msg"))
-	os.Remove(filepath.Join(dir, msg.ID+".meta"))
+	if err := os.Remove(filepath.Join(dir, msg.ID+".msg")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove message data: %w", err)
+	}
+	if err := os.Remove(filepath.Join(dir, msg.ID+".meta")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove message metadata: %w", err)
+	}
+	return nil
 }
 
 // loadMessage reads a message metadata file and returns the Message.
@@ -524,7 +563,10 @@ func (m *Manager) scanRetryQueue() {
 				continue
 			}
 			if now.After(msg.NextRetry) {
-				m.moveSpool(msg, SpoolActive)
+				if err := m.moveSpool(msg, SpoolActive); err != nil {
+					m.logger.Error("Failed to re-activate retry message", "id", msg.ID, "error", err)
+					continue
+				}
 				m.logger.Debug("Message re-activated for retry", "id", msg.ID, "retry", msg.RetryCount)
 			}
 		}

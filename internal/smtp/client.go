@@ -4,9 +4,9 @@ package smtp
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"sync"
@@ -58,6 +58,7 @@ type smtpConn struct {
 	createdAt time.Time
 	lastUsed  time.Time
 	tls       bool
+	reusable  bool
 }
 
 // NewClient creates a new outbound SMTP client.
@@ -163,6 +164,7 @@ func (c *Client) dial(mxHost, localIP string) (*smtpConn, error) {
 		host:      mxHost,
 		createdAt: time.Now(),
 		lastUsed:  time.Now(),
+		reusable:  true,
 	}
 
 	// Read greeting
@@ -222,6 +224,7 @@ func (c *Client) performTransaction(sc *smtpConn, from, to string, data []byte, 
 	// MAIL FROM
 	code, msg, err := sc.command("MAIL FROM:<%s>", from)
 	if err != nil {
+		sc.reusable = false
 		result.Status = "deferred"
 		result.ResponseText = err.Error()
 		return err
@@ -236,6 +239,7 @@ func (c *Client) performTransaction(sc *smtpConn, from, to string, data []byte, 
 	// RCPT TO
 	code, msg, err = sc.command("RCPT TO:<%s>", to)
 	if err != nil {
+		sc.reusable = false
 		result.Status = "deferred"
 		result.ResponseText = err.Error()
 		return err
@@ -250,6 +254,7 @@ func (c *Client) performTransaction(sc *smtpConn, from, to string, data []byte, 
 	// DATA
 	code, msg, err = sc.command("DATA")
 	if err != nil {
+		sc.reusable = false
 		result.Status = "deferred"
 		result.ResponseText = err.Error()
 		return err
@@ -262,13 +267,29 @@ func (c *Client) performTransaction(sc *smtpConn, from, to string, data []byte, 
 	}
 
 	// Send message body with dot-stuffing
-	sc.writeData(data)
-	sc.writer.WriteString("\r\n.\r\n")
-	sc.writer.Flush()
+	if err := sc.writeData(data); err != nil {
+		sc.reusable = false
+		result.Status = "deferred"
+		result.ResponseText = err.Error()
+		return err
+	}
+	if _, err := sc.writer.WriteString("\r\n.\r\n"); err != nil {
+		sc.reusable = false
+		result.Status = "deferred"
+		result.ResponseText = err.Error()
+		return err
+	}
+	if err := sc.writer.Flush(); err != nil {
+		sc.reusable = false
+		result.Status = "deferred"
+		result.ResponseText = err.Error()
+		return err
+	}
 
 	// Read response to data
 	code, msg, err = sc.readResponse()
 	if err != nil {
+		sc.reusable = false
 		result.Status = "deferred"
 		result.ResponseText = err.Error()
 		return err
@@ -288,6 +309,16 @@ func (c *Client) performTransaction(sc *smtpConn, from, to string, data []byte, 
 
 // returnConnection returns a connection to the pool.
 func (c *Client) returnConnection(mxHost string, sc *smtpConn) {
+	if !sc.reusable {
+		sc.conn.Close()
+		return
+	}
+
+	if code, _, err := sc.command("RSET"); err != nil || code != 250 {
+		sc.conn.Close()
+		return
+	}
+
 	c.mu.Lock()
 	pool, exists := c.pools[mxHost]
 	if !exists {
@@ -372,24 +403,26 @@ func (sc *smtpConn) readResponse() (int, string, error) {
 }
 
 // writeData writes message data with dot-stuffing per RFC 5321.
-func (sc *smtpConn) writeData(data []byte) {
-	reader := bufio.NewReader(strings.NewReader(string(data)))
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			// Dot-stuffing: lines starting with '.' get an extra '.'
-			if strings.HasPrefix(line, ".") {
-				sc.writer.WriteString(".")
+func (sc *smtpConn) writeData(data []byte) error {
+	normalized := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+	lines := bytes.Split(normalized, []byte("\n"))
+	for i, line := range lines {
+		if len(line) > 0 && line[0] == '.' {
+			if _, err := sc.writer.WriteString("."); err != nil {
+				return err
 			}
-			sc.writer.WriteString(line)
 		}
-		if err == io.EOF {
-			break
+		if _, err := sc.writer.Write(line); err != nil {
+			return err
 		}
-		if err != nil {
-			break
+		if i < len(lines)-1 {
+			if _, err := sc.writer.WriteString("\r\n"); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // Close closes the SMTP connection.

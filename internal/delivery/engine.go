@@ -36,6 +36,8 @@ type Engine struct {
 	client     *smtp.Client
 	scheduler  *queue.Scheduler
 	circuitBrk *CircuitBreakerManager
+	pendingMu  sync.Mutex
+	pendingIDs map[string]struct{}
 }
 
 // EngineConfig bundles all dependencies required to construct an Engine.
@@ -69,6 +71,7 @@ func NewEngine(ecfg EngineConfig) *Engine {
 		client:     smtp.NewClient(ecfg.Cfg, ecfg.OutboundPort, ecfg.Hostname, ecfg.Logger),
 		scheduler:  queue.NewScheduler(ecfg.Cfg.PerDomainConcurrency, 0),
 		circuitBrk: NewCircuitBreakerManager(5, 30*time.Second),
+		pendingIDs: make(map[string]struct{}),
 	}
 }
 
@@ -119,6 +122,9 @@ func (e *Engine) scanLoop(ctx context.Context) {
 				continue
 			}
 			for _, msg := range messages {
+				if !e.markPending(msg.ID) {
+					continue
+				}
 				e.scheduler.Schedule(msg)
 			}
 		}
@@ -148,6 +154,7 @@ func (e *Engine) workerLoop(ctx context.Context, workerID int) {
 
 // deliver handles the full delivery pipeline for a single message.
 func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) {
+	defer e.clearPending(msg.ID)
 	defer e.scheduler.Release(msg.Domain)
 
 	start := time.Now()
@@ -160,7 +167,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 	mxRecords, err := e.dns.LookupMX(msg.Domain)
 	if err != nil {
 		e.logger.Error("MX resolution failed", "id", msg.ID, "domain", msg.Domain, "error", err)
-		e.handleDeliveryFailure(msg, 0, "DNS resolution failed: "+err.Error())
+		e.handleDeliveryFailure(msg, 0, "DNS resolution failed: "+err.Error(), true)
 		return
 	}
 
@@ -171,16 +178,27 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 		return
 	}
 
-	lastResult, lastErr := e.attemptMXDelivery(msg, mxRecords, selectedIP, data, start)
-
-	// All MX hosts failed — record outcome
-	if lastResult != nil {
-		e.ipPool.RecordResult(selectedIP.Address, false, lastResult.ResponseCode, lastResult.TLSUsed, false)
-		e.handleDeliveryFailure(msg, lastResult.ResponseCode, lastResult.ResponseText)
-	} else if lastErr != nil {
-		e.ipPool.RecordResult(selectedIP.Address, false, 0, false, true)
-		e.handleDeliveryFailure(msg, 0, lastErr.Error())
+	successes, failedRecipients, responseCode, responseText, timeout := e.attemptMXDelivery(msg, mxRecords, selectedIP, data, start)
+	if len(failedRecipients) == 0 {
+		if err := e.queue.Complete(msg); err != nil {
+			e.logger.Error("Failed to complete delivered message", "id", msg.ID, "error", err)
+		}
+		return
 	}
+
+	msg.Recipients = failedRecipients
+	msg.Domain = extractDomain(failedRecipients[0])
+	if successes == 0 {
+		e.handleDeliveryFailure(msg, responseCode, responseText, timeout)
+		return
+	}
+
+	e.logger.Warn("Partial delivery, retrying remaining recipients",
+		"id", msg.ID,
+		"delivered", successes,
+		"remaining", len(failedRecipients),
+	)
+	e.handleDeliveryFailure(msg, responseCode, responseText, timeout)
 }
 
 // prepareMessage loads the raw message bytes and optionally DKIM-signs them.
@@ -231,63 +249,90 @@ func (e *Engine) attemptMXDelivery(
 	selectedIP *ip.PoolIP,
 	data []byte,
 	start time.Time,
-) (lastResult *smtp.DeliveryResult, lastErr error) {
-	for _, mx := range mxRecords {
-		if !e.circuitBrk.AllowRequest(mx.Host) {
-			e.logger.Debug("Circuit breaker open, skipping MX",
-				"id", msg.ID, "mx", mx.Host,
-				"state", e.circuitBrk.GetState(mx.Host).String())
-			continue
-		}
+) (successes int, failedRecipients []string, responseCode int, responseText string, timeout bool) {
+	for _, recipient := range msg.Recipients {
+		delivered := false
+		for _, mx := range mxRecords {
+			if !e.circuitBrk.AllowRequest(mx.Host) {
+				e.logger.Debug("Circuit breaker open, skipping MX",
+					"id", msg.ID, "mx", mx.Host,
+					"state", e.circuitBrk.GetState(mx.Host).String())
+				continue
+			}
 
-		for _, recipient := range msg.Recipients {
 			result, err := e.client.Deliver(mx.Host, selectedIP.Address, msg.Sender, recipient, data)
-			lastResult = result
-
 			if err != nil {
-				lastErr = err
 				e.circuitBrk.RecordFailure(mx.Host)
+				timeout = result == nil || result.ResponseCode == 0
+				if result != nil {
+					responseCode = result.ResponseCode
+					responseText = result.ResponseText
+					e.ipPool.RecordResult(selectedIP.Address, false, result.ResponseCode, result.TLSUsed, timeout)
+				} else {
+					responseCode = 0
+					responseText = err.Error()
+					e.ipPool.RecordResult(selectedIP.Address, false, 0, false, true)
+				}
 				e.logger.Debug("Delivery attempt failed",
 					"id", msg.ID, "mx", mx.Host,
 					"recipient", logging.MaskEmail(recipient), "error", err)
 				continue
 			}
 
-			if result.Status == "delivered" {
-				e.circuitBrk.RecordSuccess(mx.Host)
-				duration := time.Since(start)
-				e.logger.Info("Message delivered",
-					"id", msg.ID,
-					"recipient", logging.MaskEmail(recipient),
-					"mx", mx.Host,
-					"ip", selectedIP.Address,
-					"tls", result.TLSUsed,
-					"duration_ms", duration.Milliseconds(),
-				)
-				e.recordEvent(msg, result, duration)
-				e.ipPool.RecordResult(selectedIP.Address, true, result.ResponseCode, result.TLSUsed, false)
-				metrics.DeliveredTotal.Inc()
-				metrics.DeliveryDuration.Observe(duration.Seconds())
-				e.queue.Complete(msg)
-				return nil, nil
+			if result.Status != "delivered" {
+				e.circuitBrk.RecordFailure(mx.Host)
+				responseCode = result.ResponseCode
+				responseText = result.ResponseText
+				timeout = false
+				e.ipPool.RecordResult(selectedIP.Address, false, result.ResponseCode, result.TLSUsed, false)
+				continue
 			}
+
+			e.circuitBrk.RecordSuccess(mx.Host)
+			duration := time.Since(start)
+			e.logger.Info("Message delivered",
+				"id", msg.ID,
+				"recipient", logging.MaskEmail(recipient),
+				"mx", mx.Host,
+				"ip", selectedIP.Address,
+				"tls", result.TLSUsed,
+				"duration_ms", duration.Milliseconds(),
+			)
+			e.recordEvent(msg, result, duration)
+			e.ipPool.RecordResult(selectedIP.Address, true, result.ResponseCode, result.TLSUsed, false)
+			metrics.DeliveredTotal.Inc()
+			metrics.DeliveryDuration.Observe(duration.Seconds())
+			successes++
+			delivered = true
+			break
+		}
+
+		if !delivered {
+			failedRecipients = append(failedRecipients, recipient)
 		}
 	}
-	return lastResult, lastErr
+
+	return successes, failedRecipients, responseCode, responseText, timeout
 }
 
 // handleDeliveryFailure processes a failed delivery attempt.
-func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, responseText string) {
+func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, responseText string, timeout bool) {
 	retrySchedule := queue.DefaultRetrySchedule()
 	decision := queue.EvaluateRetry(retrySchedule, msg.RetryCount, responseCode, responseText)
 
 	switch decision.Action {
 	case "retry":
-		e.queue.Defer(msg, decision.Reason)
+		if err := e.queue.Defer(msg, decision.Reason); err != nil {
+			e.logger.Error("Failed to defer message", "id", msg.ID, "error", err)
+		}
 	case "dead-letter":
-		e.queue.DeadLetter(msg, decision.Reason)
+		if err := e.queue.DeadLetter(msg, decision.Reason); err != nil {
+			e.logger.Error("Failed to dead-letter message", "id", msg.ID, "error", err)
+		}
 	case "fail":
-		e.queue.Fail(msg, decision.Reason)
+		if err := e.queue.Fail(msg, decision.Reason); err != nil {
+			e.logger.Error("Failed to mark message failed", "id", msg.ID, "error", err)
+		}
 		// Classify bounce
 		if e.bouncer != nil {
 			e.bouncer.ClassifyAndRecord(msg.ID, msg.Sender, msg.Recipients[0], responseCode, responseText)
@@ -295,6 +340,7 @@ func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, res
 	}
 
 	metrics.DeliveryErrors.WithLabelValues(decision.Action).Inc()
+	_ = timeout
 }
 
 // loadMessageData reads the message body from the spool file.
@@ -352,4 +398,20 @@ func (e *Engine) recordEvent(msg *queue.Message, result *smtp.DeliveryResult, du
 		ProcessingLatency: duration.Milliseconds(),
 		Status:            result.Status,
 	})
+}
+
+func (e *Engine) markPending(messageID string) bool {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	if _, exists := e.pendingIDs[messageID]; exists {
+		return false
+	}
+	e.pendingIDs[messageID] = struct{}{}
+	return true
+}
+
+func (e *Engine) clearPending(messageID string) {
+	e.pendingMu.Lock()
+	delete(e.pendingIDs, messageID)
+	e.pendingMu.Unlock()
 }

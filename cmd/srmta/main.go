@@ -134,7 +134,7 @@ func main() {
 	}
 }
 
-func initStores(cfg *config.Config, logger *logging.Logger) (*store.Database, *store.RedisStore) {
+func initStores(cfg *config.Config, logger *logging.Logger) (store.Database, *store.RedisStore) {
 	dbStore, err := store.NewDatabase(cfg.Database)
 	if err != nil {
 		logger.Warn("Database not available — event logging disabled",
