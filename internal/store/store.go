@@ -1,219 +1,135 @@
-// Package store implements multi-database support for SRMTA.
-// Supports PostgreSQL and MySQL/MariaDB backends via the Database interface.
-// The active backend is selected by the `database.driver` config field.
+// Package store implements PostgreSQL persistence for SRMTA event logging.
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/srmta/srmta/internal/config"
 )
 
-// ── Database Interface ──────────────────────────────────────────────────────
-// All database backends must implement this interface.
-
 // Database defines the storage operations for SRMTA event logging.
 type Database interface {
-	// RecordEvent asynchronously records a delivery event.
 	RecordEvent(event *DeliveryEvent)
-
-	// RecordBounce records a bounce event.
-	RecordBounce(record interface{})
-
-	// Close gracefully closes the database connection.
+	RecordBounce(event BounceEvent)
 	Close()
-
-	// Driver returns the database driver name ("postgres" or "mysql").
 	Driver() string
 }
 
-// NewDatabase creates a new database store based on the configured driver.
-// Supported drivers: "postgres" (default), "mysql".
+// NewDatabase creates a new Postgres database store. Returns nil if host is unconfigured.
 func NewDatabase(cfg config.DatabaseConfig) (Database, error) {
-	switch cfg.Driver {
-	case "mysql":
-		return NewMySQLStore(cfg)
-	case "postgres", "":
-		return NewPostgresStore(cfg)
-	default:
-		return nil, fmt.Errorf("unsupported database driver: %q (supported: postgres, mysql)", cfg.Driver)
+	if cfg.Host == "" {
+		return nil, nil
 	}
+	if cfg.Driver != "" && cfg.Driver != "postgres" {
+		return nil, fmt.Errorf("unsupported database driver: %q (only postgres is supported)", cfg.Driver)
+	}
+	return NewPostgresStore(cfg)
 }
-
-// ── DeliveryEvent Schema ────────────────────────────────────────────────────
 
 // DeliveryEvent represents a delivery event stored in the database.
 type DeliveryEvent struct {
-	Timestamp         time.Time `json:"timestamp"`
-	MessageID         string    `json:"message_id"`
-	Sender            string    `json:"sender"`
-	Recipient         string    `json:"recipient"`
-	RemoteMX          string    `json:"remote_mx"`
-	ResponseCode      int       `json:"response_code"`
-	ResponseText      string    `json:"response_text"`
-	IPUsed            string    `json:"ip_used"`
-	TLSStatus         bool      `json:"tls_status"`
-	RetryCount        int       `json:"retry_count"`
-	DKIMStatus        string    `json:"dkim_status"`
-	ProcessingLatency int64     `json:"processing_latency_ms"`
-	Status            string    `json:"status"`
+	Timestamp         time.Time
+	MessageID         string
+	Sender            string
+	Recipient         string
+	RemoteMX          string
+	ResponseCode      int
+	ResponseText      string
+	IPUsed            string
+	TLSStatus         bool
+	RetryCount        int
+	DKIMStatus        string
+	ProcessingLatency int64
+	Status            string
 }
 
-// ── PostgreSQL Store ────────────────────────────────────────────────────────
+// BounceEvent holds the data recorded for a bounce.
+type BounceEvent struct {
+	MessageID  string
+	Sender     string
+	Recipient  string
+	BounceType string
+	Code       int
+	Text       string
+	Timestamp  time.Time
+}
 
-// PostgresStore manages PostgreSQL connections for metadata and event logging.
-// NOTE: In production, use database/sql with pgx driver.
+// PostgresStore writes delivery events and bounces to PostgreSQL.
 type PostgresStore struct {
-	cfg    config.DatabaseConfig
+	db     *sql.DB
 	events chan *DeliveryEvent
+	done   chan struct{}
 }
 
-// NewPostgresStore creates a new PostgreSQL store.
 func NewPostgresStore(cfg config.DatabaseConfig) (*PostgresStore, error) {
-	store := &PostgresStore{
-		cfg:    cfg,
-		events: make(chan *DeliveryEvent, 10000),
+	db, err := sql.Open("postgres", cfg.DSN())
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-
-	// In production: establish database connection pool
-	// db, err := sql.Open("postgres", cfg.DSN())
-	// if err != nil { return nil, err }
-
-	go store.eventWriter()
-	return store, nil
+	if cfg.MaxOpenConns > 0 {
+		db.SetMaxOpenConns(cfg.MaxOpenConns)
+	}
+	if cfg.MaxIdleConns > 0 {
+		db.SetMaxIdleConns(cfg.MaxIdleConns)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	s := &PostgresStore{
+		db:     db,
+		events: make(chan *DeliveryEvent, 10000),
+		done:   make(chan struct{}),
+	}
+	go s.eventWriter()
+	return s, nil
 }
 
 func (s *PostgresStore) RecordEvent(event *DeliveryEvent) {
 	select {
 	case s.events <- event:
 	default:
-		// Channel full, drop event (metrics will track this)
+		// channel full — drop; upstream metrics track delivery counts
 	}
 }
 
-func (s *PostgresStore) RecordBounce(record interface{}) {
-	// In production: INSERT INTO bounces (message_id, sender, recipient, bounce_type, ...)
-	// VALUES ($1, $2, $3, $4, ...)
+func (s *PostgresStore) RecordBounce(event BounceEvent) {
+	s.db.Exec(
+		`INSERT INTO bounces
+		 (message_id, sender, recipient, bounce_type, response_code, response_text, timestamp)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		event.MessageID, event.Sender, event.Recipient, event.BounceType,
+		event.Code, event.Text, event.Timestamp,
+	)
 }
 
 func (s *PostgresStore) eventWriter() {
+	defer close(s.done)
 	for event := range s.events {
-		// In production: batch INSERT into delivery_events table
-		// INSERT INTO delivery_events (timestamp, message_id, sender, recipient, ...)
-		// VALUES ($1, $2, $3, $4, ...)
-		_ = event
+		s.db.Exec(
+			`INSERT INTO delivery_events
+			 (timestamp, message_id, sender, recipient, remote_mx, response_code, response_text,
+			  ip_used, tls_status, retry_count, dkim_status, processing_latency_ms, status)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			event.Timestamp, event.MessageID, event.Sender, event.Recipient,
+			event.RemoteMX, event.ResponseCode, event.ResponseText, event.IPUsed,
+			event.TLSStatus, event.RetryCount, event.DKIMStatus, event.ProcessingLatency, event.Status,
+		)
 	}
 }
 
 func (s *PostgresStore) Close() {
 	close(s.events)
-	// In production: close database connection pool
+	<-s.done
+	s.db.Close()
 }
 
-func (s *PostgresStore) Driver() string {
-	return "postgres"
-}
-
-// ── MySQL/MariaDB Store ─────────────────────────────────────────────────────
-
-// MySQLStore manages MySQL/MariaDB connections for metadata and event logging.
-// NOTE: In production, use database/sql with go-sql-driver/mysql.
-type MySQLStore struct {
-	cfg    config.DatabaseConfig
-	events chan *DeliveryEvent
-}
-
-// NewMySQLStore creates a new MySQL/MariaDB store.
-func NewMySQLStore(cfg config.DatabaseConfig) (*MySQLStore, error) {
-	store := &MySQLStore{
-		cfg:    cfg,
-		events: make(chan *DeliveryEvent, 10000),
-	}
-
-	// In production: establish database connection pool
-	// db, err := sql.Open("mysql", cfg.DSN())
-	// if err != nil { return nil, err }
-
-	go store.eventWriter()
-	return store, nil
-}
-
-func (s *MySQLStore) RecordEvent(event *DeliveryEvent) {
-	select {
-	case s.events <- event:
-	default:
-		// Channel full, drop event
-	}
-}
-
-func (s *MySQLStore) RecordBounce(record interface{}) {
-	// In production: INSERT INTO bounces (message_id, sender, recipient, bounce_type, ...)
-	// VALUES (?, ?, ?, ?, ...)
-	// Note: MySQL uses ? placeholders, not $1/$2
-}
-
-func (s *MySQLStore) eventWriter() {
-	for event := range s.events {
-		// In production: batch INSERT into delivery_events table
-		// INSERT INTO delivery_events (timestamp, message_id, sender, recipient, ...)
-		// VALUES (?, ?, ?, ?, ...)
-		_ = event
-	}
-}
-
-func (s *MySQLStore) Close() {
-	close(s.events)
-	// In production: close database connection pool
-}
-
-func (s *MySQLStore) Driver() string {
-	return "mysql"
-}
-
-// ── Redis Store ─────────────────────────────────────────────────────────────
-
-// RedisStore manages Redis connections for queue state and DNS caching.
-type RedisStore struct {
-	cfg config.RedisConfig
-}
-
-// MXRecord matches dns.MXRecord for serialization.
-type MXRecord struct {
-	Host     string   `json:"host"`
-	Priority uint16   `json:"priority"`
-	IPs      []string `json:"ips"`
-}
-
-func NewRedisStore(cfg config.RedisConfig) (*RedisStore, error) {
-	return &RedisStore{cfg: cfg}, nil
-}
-
-func (s *RedisStore) EnqueueMessage(messageID, domain string, priority int) {
-	// ZADD srmta:queue:{domain} {priority} {messageID}
-}
-
-func (s *RedisStore) DequeueMessage(messageID, domain string) {
-	// ZREM srmta:queue:{domain} {messageID}
-}
-
-func (s *RedisStore) GetDNSCache(domain string) ([]*MXRecord, error) {
-	return nil, fmt.Errorf("not cached")
-}
-
-func (s *RedisStore) SetDNSCache(domain string, records interface{}, ttl time.Duration) {
-	// SETEX srmta:dns:{domain} {ttl} {json}
-}
-
-func (s *RedisStore) GetQueueDepth() (int64, error) {
-	return 0, nil
-}
-
-func (s *RedisStore) Close() {
-	// Close Redis client
-}
+func (s *PostgresStore) Driver() string { return "postgres" }
 
 // ── File Utilities ──────────────────────────────────────────────────────────
 

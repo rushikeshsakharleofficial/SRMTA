@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/srmta/srmta/internal/access"
 	"github.com/srmta/srmta/internal/bounce"
 	"github.com/srmta/srmta/internal/config"
 	"github.com/srmta/srmta/internal/delivery"
@@ -56,15 +57,12 @@ func main() {
 	metricsServer := metrics.NewServer(cfg.Metrics)
 	metrics.Register()
 
-	dbStore, redisStore := initStores(cfg, logger)
+	dbStore := initStore(cfg, logger)
 	if dbStore != nil {
 		defer dbStore.Close()
 	}
-	if redisStore != nil {
-		defer redisStore.Close()
-	}
 
-	dnsResolver := dns.NewResolver(cfg.DNS, redisStore, logger)
+	dnsResolver := dns.NewResolver(cfg.DNS, logger)
 	ipPool := ip.NewPool(cfg.IPPool, logger)
 
 	dkimSigner, err := dkim.NewSigner(cfg.DKIM)
@@ -74,7 +72,7 @@ func main() {
 
 	bounceClassifier := bounce.NewClassifier(cfg.Bounce, dbStore, logger)
 
-	queueManager, err := queue.NewManager(cfg.Queue, redisStore, dbStore, logger)
+	queueManager, err := queue.NewManager(cfg.Queue, dbStore, logger)
 	if err != nil {
 		logger.Error("Failed to initialize queue manager", "error", err)
 		os.Exit(1)
@@ -96,7 +94,28 @@ func main() {
 		Logger:       logger,
 	})
 
-	smtpServer := smtp.NewServer(cfg.SMTP, cfg.TLS, queueManager, logger)
+	// Load IP and domain access control lists from configured INI files.
+	var ipACL *access.AccessList
+	if cfg.SMTP.AllowedIPsFile != "" {
+		acl, err := access.LoadIPsINI(cfg.SMTP.AllowedIPsFile)
+		if err != nil {
+			logger.Warn("Failed to load allowed IPs file — IP ACL disabled", "file", cfg.SMTP.AllowedIPsFile, "error", err)
+		} else {
+			ipACL = acl
+			logger.Info("Loaded IP ACL", "file", cfg.SMTP.AllowedIPsFile)
+		}
+	}
+	if cfg.SMTP.AllowedDomainsFile != "" {
+		domains, err := access.LoadDomainsINI(cfg.SMTP.AllowedDomainsFile)
+		if err != nil {
+			logger.Warn("Failed to load allowed domains file", "file", cfg.SMTP.AllowedDomainsFile, "error", err)
+		} else {
+			cfg.SMTP.AllowedDomains = append(cfg.SMTP.AllowedDomains, domains...)
+			logger.Info("Loaded domain ACL", "file", cfg.SMTP.AllowedDomainsFile, "count", len(domains))
+		}
+	}
+
+	smtpServer := smtp.NewServer(cfg.SMTP, cfg.TLS, queueManager, logger, ipACL)
 
 	svc := subsystems{
 		metrics:  metricsServer,
@@ -134,22 +153,16 @@ func main() {
 	}
 }
 
-func initStores(cfg *config.Config, logger *logging.Logger) (store.Database, *store.RedisStore) {
+func initStore(cfg *config.Config, logger *logging.Logger) store.Database {
 	dbStore, err := store.NewDatabase(cfg.Database)
 	if err != nil {
-		logger.Warn("Database not available — event logging disabled",
-			"driver", cfg.Database.Driver, "error", err)
+		logger.Warn("Database not available — event logging disabled", "error", err)
+		return nil
 	}
 	if dbStore != nil {
 		logger.Info("Database initialized", "driver", dbStore.Driver())
 	}
-
-	redisStore, err := store.NewRedisStore(cfg.Redis)
-	if err != nil {
-		logger.Warn("Redis not available — queue state caching disabled", "error", err)
-	}
-
-	return dbStore, redisStore
+	return dbStore
 }
 
 func buildRouter(cfg *config.Config, ipPool *ip.Pool) *routing.Router {

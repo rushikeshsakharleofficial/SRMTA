@@ -5,6 +5,8 @@
  */
 
 const fs = require('node:fs');
+const path = require('node:path');
+const net = require('node:net');
 const crypto = require('node:crypto');
 const fastify = require('fastify')({ logger: true });
 const { Pool } = require('pg');
@@ -64,6 +66,9 @@ const config = {
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   },
+  spoolDir: process.env.SPOOL_DIR || '/var/spool/srmta',
+  smtpHost: process.env.SMTP_HOST || '127.0.0.1',
+  smtpPort: Number.parseInt(process.env.SMTP_PORT || '25', 10),
 };
 
 const pool = new Pool({
@@ -120,10 +125,48 @@ function redactWebhookData(data) {
   return redacted;
 }
 
-function notImplemented(reply, feature) {
-  return reply.code(501).send({
-    error: 'Not Implemented',
-    message: `${feature} is not wired to the SMTP/queue engine yet`,
+async function countSpool(spoolName) {
+  const dirName = spoolName === 'dead_letter' ? 'dead-letter' : spoolName;
+  const spoolPath = path.join(config.spoolDir, dirName);
+  let depth = 0;
+  let oldestMs = null;
+  try {
+    const shardDirs = await fs.promises.readdir(spoolPath);
+    for (const sd of shardDirs) {
+      const sdPath = path.join(spoolPath, sd);
+      const files = await fs.promises.readdir(sdPath).catch(() => []);
+      for (const f of files) {
+        if (!f.endsWith('.meta')) continue;
+        depth++;
+        if (oldestMs === null) {
+          const stat = await fs.promises.stat(path.join(sdPath, f)).catch(() => null);
+          if (stat) oldestMs = stat.mtimeMs;
+        }
+      }
+    }
+  } catch {}
+  return { depth, oldest_message: oldestMs ? new Date(oldestMs).toISOString() : null };
+}
+
+function injectViaSMTP(from, to, rawMessage) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: config.smtpHost, port: config.smtpPort });
+    let step = 0;
+    socket.setTimeout(15000);
+    socket.on('timeout', () => { socket.destroy(); reject(new Error('SMTP timeout')); });
+    socket.on('error', reject);
+    const send = (s) => socket.write(s + '\r\n');
+    socket.on('data', (chunk) => {
+      const resp = chunk.toString();
+      const code = resp.slice(0, 3);
+      if (code === '220' && step === 0) { step = 1; send('EHLO api'); }
+      else if (code === '250' && step === 1) { step = 2; send('MAIL FROM:<' + from + '>'); }
+      else if (code === '250' && step === 2) { step = 3; send('RCPT TO:<' + to + '>'); }
+      else if (code === '250' && step === 3) { step = 4; send('DATA'); }
+      else if (code === '354') { socket.write(rawMessage + '\r\n.\r\n'); send('QUIT'); step = 5; }
+      else if ((code === '250' || code === '221') && step === 5) { socket.end(); resolve(); }
+      else if (code[0] === '4' || code[0] === '5') { socket.destroy(); reject(new Error('SMTP ' + resp.trim())); }
+    });
   });
 }
 
@@ -265,35 +308,26 @@ function sendRoutes() {
   fastify.post('/api/send', {
     preHandler: [fastify.requireRole(['admin', 'operator'])],
     schema: { body: messageSchema },
-  }, async (request, reply) => notImplemented(reply, 'Message enqueue'));
+  }, async (request, reply) => {
+    const { from, to, subject, text, html } = request.body;
+    const body = [
+      'From: ' + from,
+      'To: ' + to,
+      'Subject: ' + subject,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      text || html || '',
+    ].join('\r\n');
+    try {
+      await injectViaSMTP(from, to, body);
+      return { queued: true };
+    } catch (err) {
+      fastify.log.error({ err }, 'smtp_inject_error');
+      return reply.code(502).send({ error: 'Delivery failed', detail: err.message });
+    }
+  });
 
-  fastify.post('/api/bulk', {
-    preHandler: [fastify.requireRole(['admin', 'operator'])],
-    schema: {
-      body: {
-        type: 'object',
-        required: ['messages'],
-        additionalProperties: false,
-        properties: {
-          messages: { type: 'array', minItems: 1, maxItems: 1000, items: messageSchema },
-        },
-      },
-    },
-  }, async (request, reply) => notImplemented(reply, 'Bulk message enqueue'));
-
-  fastify.post('/api/schedule', {
-    preHandler: [fastify.requireRole(['admin', 'operator'])],
-    schema: {
-      body: {
-        ...messageSchema,
-        required: ['from', 'to', 'subject', 'send_at'],
-        properties: {
-          ...messageSchema.properties,
-          send_at: { type: 'string', format: 'date-time' },
-        },
-      },
-    },
-  }, async (request, reply) => notImplemented(reply, 'Scheduled message enqueue'));
 }
 
 function statusRoutes() {
@@ -447,27 +481,68 @@ function logRoutes() {
 }
 
 function queueRoutes() {
-  fastify.get('/api/queue/stats', { preHandler: [fastify.authenticate] }, async () => ({
-    spools: {
-      incoming: { depth: 0, oldest_message: null },
-      active: { depth: 0, oldest_message: null },
-      deferred: { depth: 0, oldest_message: null },
-      retry: { depth: 0, oldest_message: null },
-      dead_letter: { depth: 0, oldest_message: null },
-      failed: { depth: 0, oldest_message: null },
-    },
-    total_depth: 0,
-    processing_rate: 0,
-  }));
+  fastify.get('/api/queue/stats', { preHandler: [fastify.authenticate] }, async () => {
+    const spoolNames = ['incoming', 'active', 'deferred', 'retry', 'dead_letter', 'failed'];
+    const spools = {};
+    let totalDepth = 0;
+    for (const name of spoolNames) {
+      const result = await countSpool(name);
+      spools[name] = result;
+      totalDepth += result.depth;
+    }
+    return { spools, total_depth: totalDepth, processing_rate: 0 };
+  });
 
   fastify.post('/api/queue/flush', {
     preHandler: [fastify.requireRole(['admin'])],
     schema: { body: { type: 'object', required: ['spool'], additionalProperties: false, properties: { spool: { type: 'string', enum: ['incoming', 'active', 'deferred', 'retry', 'dead_letter', 'failed'] } } } },
-  }, async (request, reply) => notImplemented(reply, 'Queue flush'));
+  }, async (request, reply) => {
+    const { spool } = request.body;
+    const dirName = spool === 'dead_letter' ? 'dead-letter' : spool;
+    const spoolPath = path.join(config.spoolDir, dirName);
+    let deleted = 0;
+    try {
+      const shardDirs = await fs.promises.readdir(spoolPath);
+      for (const sd of shardDirs) {
+        const sdPath = path.join(spoolPath, sd);
+        const files = await fs.promises.readdir(sdPath).catch(() => []);
+        for (const f of files) {
+          await fs.promises.unlink(path.join(sdPath, f)).catch(() => {});
+          deleted++;
+        }
+      }
+    } catch (err) {
+      fastify.log.error({ err }, 'queue_flush_error');
+      return reply.code(500).send({ error: 'Flush failed', detail: err.message });
+    }
+    return { flushed: spool, deleted };
+  });
 }
 
 function domainRoutes() {
-  fastify.get('/api/domains/stats', { preHandler: [fastify.authenticate] }, async () => ({ domains: [] }));
+  fastify.get('/api/domains/stats', { preHandler: [fastify.authenticate] }, async () => {
+    const domainCounts = new Map();
+    const spoolPath = path.join(config.spoolDir, 'active');
+    try {
+      const shardDirs = await fs.promises.readdir(spoolPath);
+      for (const sd of shardDirs) {
+        const sdPath = path.join(spoolPath, sd);
+        const files = await fs.promises.readdir(sdPath).catch(() => []);
+        for (const f of files) {
+          if (!f.endsWith('.meta')) continue;
+          try {
+            const raw = await fs.promises.readFile(path.join(sdPath, f), 'utf8');
+            const meta = JSON.parse(raw);
+            if (meta.domain) domainCounts.set(meta.domain, (domainCounts.get(meta.domain) || 0) + 1);
+          } catch {}
+        }
+      }
+    } catch {}
+    const domains = [...domainCounts.entries()]
+      .map(([domain, queue_depth]) => ({ domain, queue_depth }))
+      .sort((a, b) => b.queue_depth - a.queue_depth);
+    return { domains };
+  });
 
   fastify.get('/api/ips', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     try {
@@ -481,9 +556,6 @@ function domainRoutes() {
     }
   });
 
-  const ipParamSchema = { params: { type: 'object', required: ['address'], properties: { address: { type: 'string', minLength: 2, maxLength: 64 } } } };
-  fastify.post('/api/ips/:address/disable', { preHandler: [fastify.requireRole(['admin', 'operator'])], schema: ipParamSchema }, async (request, reply) => notImplemented(reply, 'IP disable'));
-  fastify.post('/api/ips/:address/enable', { preHandler: [fastify.requireRole(['admin', 'operator'])], schema: ipParamSchema }, async (request, reply) => notImplemented(reply, 'IP enable'));
 }
 
 function websocketRoutes() {
@@ -502,8 +574,24 @@ function websocketRoutes() {
       }
     });
 
-    const interval = setInterval(() => {
-      socket.send(JSON.stringify({ type: 'metrics_update', timestamp: new Date().toISOString(), data: { queue_depth: 0, delivery_rate: 0, active_connections: 0 } }));
+    const interval = setInterval(async () => {
+      try {
+        const spoolNames = ['incoming', 'active', 'deferred', 'retry', 'dead_letter', 'failed'];
+        const spools = {};
+        let totalDepth = 0;
+        for (const name of spoolNames) {
+          const result = await countSpool(name);
+          spools[name] = result.depth;
+          totalDepth += result.depth;
+        }
+        socket.send(JSON.stringify({
+          type: 'metrics_update',
+          timestamp: new Date().toISOString(),
+          data: { queue_depth: totalDepth, spools },
+        }));
+      } catch (err) {
+        fastify.log.warn({ err }, 'ws_metrics_error');
+      }
     }, 5000);
 
     socket.on('close', () => clearInterval(interval));

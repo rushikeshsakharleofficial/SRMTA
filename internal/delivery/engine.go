@@ -167,7 +167,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 	mxRecords, err := e.dns.LookupMX(msg.Domain)
 	if err != nil {
 		e.logger.Error("MX resolution failed", "id", msg.ID, "domain", msg.Domain, "error", err)
-		e.handleDeliveryFailure(msg, 0, "DNS resolution failed: "+err.Error(), true)
+		e.handleDeliveryFailure(msg, 0, "DNS resolution failed: "+err.Error())
 		return
 	}
 
@@ -178,7 +178,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 		return
 	}
 
-	successes, failedRecipients, responseCode, responseText, timeout := e.attemptMXDelivery(msg, mxRecords, selectedIP, data, start)
+	successes, failedRecipients, responseCode, responseText := e.attemptMXDelivery(msg, mxRecords, selectedIP, data, start)
 	if len(failedRecipients) == 0 {
 		if err := e.queue.Complete(msg); err != nil {
 			e.logger.Error("Failed to complete delivered message", "id", msg.ID, "error", err)
@@ -189,7 +189,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 	msg.Recipients = failedRecipients
 	msg.Domain = extractDomain(failedRecipients[0])
 	if successes == 0 {
-		e.handleDeliveryFailure(msg, responseCode, responseText, timeout)
+		e.handleDeliveryFailure(msg, responseCode, responseText)
 		return
 	}
 
@@ -198,7 +198,7 @@ func (e *Engine) deliver(ctx context.Context, workerID int, msg *queue.Message) 
 		"delivered", successes,
 		"remaining", len(failedRecipients),
 	)
-	e.handleDeliveryFailure(msg, responseCode, responseText, timeout)
+	e.handleDeliveryFailure(msg, responseCode, responseText)
 }
 
 // prepareMessage loads the raw message bytes and optionally DKIM-signs them.
@@ -249,7 +249,7 @@ func (e *Engine) attemptMXDelivery(
 	selectedIP *ip.PoolIP,
 	data []byte,
 	start time.Time,
-) (successes int, failedRecipients []string, responseCode int, responseText string, timeout bool) {
+) (successes int, failedRecipients []string, responseCode int, responseText string) {
 	for _, recipient := range msg.Recipients {
 		delivered := false
 		for _, mx := range mxRecords {
@@ -263,11 +263,11 @@ func (e *Engine) attemptMXDelivery(
 			result, err := e.client.Deliver(mx.Host, selectedIP.Address, msg.Sender, recipient, data)
 			if err != nil {
 				e.circuitBrk.RecordFailure(mx.Host)
-				timeout = result == nil || result.ResponseCode == 0
+				isTimeout := result == nil || result.ResponseCode == 0
 				if result != nil {
 					responseCode = result.ResponseCode
 					responseText = result.ResponseText
-					e.ipPool.RecordResult(selectedIP.Address, false, result.ResponseCode, result.TLSUsed, timeout)
+					e.ipPool.RecordResult(selectedIP.Address, false, result.ResponseCode, result.TLSUsed, isTimeout)
 				} else {
 					responseCode = 0
 					responseText = err.Error()
@@ -283,7 +283,6 @@ func (e *Engine) attemptMXDelivery(
 				e.circuitBrk.RecordFailure(mx.Host)
 				responseCode = result.ResponseCode
 				responseText = result.ResponseText
-				timeout = false
 				e.ipPool.RecordResult(selectedIP.Address, false, result.ResponseCode, result.TLSUsed, false)
 				continue
 			}
@@ -312,11 +311,22 @@ func (e *Engine) attemptMXDelivery(
 		}
 	}
 
-	return successes, failedRecipients, responseCode, responseText, timeout
+	return successes, failedRecipients, responseCode, responseText
 }
 
 // handleDeliveryFailure processes a failed delivery attempt.
-func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, responseText string, timeout bool) {
+func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, responseText string) {
+	if e.bouncer != nil && responseCode > 0 && len(msg.Recipients) > 0 {
+		record := e.bouncer.ClassifyAndRecord(msg.ID, msg.Sender, msg.Recipients[0], responseCode, responseText)
+		if record != nil && record.Type == bounce.BounceHard {
+			if err := e.queue.Fail(msg, "hard bounce: "+responseText); err != nil {
+				e.logger.Error("Failed to mark message failed", "id", msg.ID, "error", err)
+			}
+			metrics.DeliveryErrors.WithLabelValues("fail").Inc()
+			return
+		}
+	}
+
 	retrySchedule := queue.DefaultRetrySchedule()
 	decision := queue.EvaluateRetry(retrySchedule, msg.RetryCount, responseCode, responseText)
 
@@ -333,14 +343,12 @@ func (e *Engine) handleDeliveryFailure(msg *queue.Message, responseCode int, res
 		if err := e.queue.Fail(msg, decision.Reason); err != nil {
 			e.logger.Error("Failed to mark message failed", "id", msg.ID, "error", err)
 		}
-		// Classify bounce
-		if e.bouncer != nil {
+		if e.bouncer != nil && responseCode == 0 && len(msg.Recipients) > 0 {
 			e.bouncer.ClassifyAndRecord(msg.ID, msg.Sender, msg.Recipients[0], responseCode, responseText)
 		}
 	}
 
 	metrics.DeliveryErrors.WithLabelValues(decision.Action).Inc()
-	_ = timeout
 }
 
 // loadMessageData reads the message body from the spool file.

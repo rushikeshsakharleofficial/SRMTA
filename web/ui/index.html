@@ -243,34 +243,9 @@
     <!-- Stats Cards -->
     <div class="stats-grid">
       <div class="stat-card">
-        <div class="stat-label">Total Sent (24h)</div>
-        <div class="stat-value" id="stat-sent">0</div>
-        <div class="stat-change stat-up" id="stat-sent-change">↑ 12.4%</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Delivered</div>
-        <div class="stat-value" id="stat-delivered">0</div>
-        <div class="stat-change stat-up">97.2% rate</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Bounced</div>
-        <div class="stat-value" id="stat-bounced">0</div>
-        <div class="stat-change stat-down">1.8% rate</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Deferred</div>
-        <div class="stat-value" id="stat-deferred">0</div>
-        <div class="stat-change">0.8% rate</div>
-      </div>
-      <div class="stat-card">
         <div class="stat-label">Queue Depth</div>
         <div class="stat-value" id="stat-queue">0</div>
-        <div class="stat-change" id="stat-queue-rate">0 msg/s</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Avg Latency</div>
-        <div class="stat-value" id="stat-latency">0<span style="font-size:14px">ms</span></div>
-        <div class="stat-change stat-up">↓ 5.2%</div>
+        <div class="stat-change">total messages queued</div>
       </div>
     </div>
 
@@ -278,15 +253,16 @@
     <div class="charts-grid">
       <div class="chart-card">
         <div class="chart-header">
-          <div class="chart-title">Delivery Volume</div>
-          <div class="chart-tabs">
-            <div class="chart-tab active">1h</div>
-            <div class="chart-tab">6h</div>
-            <div class="chart-tab">24h</div>
-            <div class="chart-tab">7d</div>
-          </div>
+          <div class="chart-title">24h Delivery Summary</div>
         </div>
-        <div class="chart-area" id="delivery-chart"></div>
+        <div class="spool-grid" id="metrics-summary">
+          <div class="spool-item spool-active"><div class="spool-name">Sent</div><div class="spool-count" id="stat-sent">0</div></div>
+          <div class="spool-item spool-incoming"><div class="spool-name">Delivered</div><div class="spool-count" id="stat-delivered">0</div></div>
+          <div class="spool-item spool-failed"><div class="spool-name">Bounced</div><div class="spool-count" id="stat-bounced">0</div></div>
+          <div class="spool-item spool-deferred"><div class="spool-name">Deferred</div><div class="spool-count" id="stat-deferred">0</div></div>
+          <div class="spool-item spool-retry"><div class="spool-name">Success Rate</div><div class="spool-count" id="stat-sent-change" style="font-size:18px">--</div></div>
+          <div class="spool-item spool-dead"><div class="spool-name">Avg Latency</div><div class="spool-count" id="stat-latency" style="font-size:18px">0ms</div></div>
+        </div>
       </div>
 
       <div class="chart-card">
@@ -353,229 +329,196 @@
   </div>
 
   <script>
-    // ── Configuration ───────────────────────────────────────────────────
     const API_BASE = globalThis.location.origin;
     let ws = null;
 
-    // ── Simulated Data (replace with real API calls) ─────────────────
-    function generateMockData() {
-      return {
-        sent: Math.floor(Math.random() * 500000 + 1200000),
-        delivered: Math.floor(Math.random() * 500000 + 1150000),
-        bounced: Math.floor(Math.random() * 5000 + 15000),
-        deferred: Math.floor(Math.random() * 3000 + 8000),
-        queueDepth: Math.floor(Math.random() * 5000 + 2000),
-        latency: Math.floor(Math.random() * 100 + 120),
-        spools: {
-          incoming: Math.floor(Math.random() * 1000 + 500),
-          active: Math.floor(Math.random() * 2000 + 1000),
-          deferred: Math.floor(Math.random() * 500 + 200),
-          retry: Math.floor(Math.random() * 200 + 50),
-          dead: Math.floor(Math.random() * 20 + 5),
-          failed: Math.floor(Math.random() * 10 + 2),
-        },
-      };
+    function authHeaders() {
+      const token = localStorage.getItem('srmta_token');
+      return token ? { 'Authorization': 'Bearer ' + token } : {};
     }
 
-    // ── Number Formatting ───────────────────────────────────────────────
     function formatNumber(n) {
       if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
       if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-      return n.toString();
+      return String(n);
     }
 
-    // ── Update Stats ────────────────────────────────────────────────────
-    function updateStats(data) {
-      document.getElementById('stat-sent').textContent = formatNumber(data.sent);
-      document.getElementById('stat-delivered').textContent = formatNumber(data.delivered);
-      document.getElementById('stat-bounced').textContent = formatNumber(data.bounced);
-      document.getElementById('stat-deferred').textContent = formatNumber(data.deferred);
-      document.getElementById('stat-queue').textContent = formatNumber(data.queueDepth);
-      document.getElementById('stat-latency').innerHTML = data.latency + '<span style="font-size:14px">ms</span>';
-      document.getElementById('nav-queue-badge').textContent = formatNumber(data.queueDepth);
+    async function fetchQueueStats() {
+      try {
+        const res = await fetch(API_BASE + '/api/queue/stats', { headers: authHeaders() });
+        if (!res.ok) return null;
+        return res.json();
+      } catch { return null; }
+    }
 
-      // Spools
-      document.getElementById('spool-incoming').textContent = formatNumber(data.spools.incoming);
-      document.getElementById('spool-active').textContent = formatNumber(data.spools.active);
-      document.getElementById('spool-deferred').textContent = formatNumber(data.spools.deferred);
-      document.getElementById('spool-retry').textContent = formatNumber(data.spools.retry);
-      document.getElementById('spool-dead').textContent = formatNumber(data.spools.dead);
-      document.getElementById('spool-failed').textContent = formatNumber(data.spools.failed);
+    async function fetchMetrics() {
+      try {
+        const res = await fetch(API_BASE + '/api/metrics', { headers: authHeaders() });
+        if (!res.ok) return null;
+        return res.json();
+      } catch { return null; }
+    }
 
+    function updateQueueStats(queue) {
+      const spools = queue.spools ?? {};
+      document.getElementById('stat-queue').textContent = formatNumber(queue.total_depth ?? 0);
+      document.getElementById('nav-queue-badge').textContent = formatNumber(queue.total_depth ?? 0);
+      document.getElementById('spool-incoming').textContent = formatNumber(spools.incoming?.depth ?? 0);
+      document.getElementById('spool-active').textContent = formatNumber(spools.active?.depth ?? 0);
+      document.getElementById('spool-deferred').textContent = formatNumber(spools.deferred?.depth ?? 0);
+      document.getElementById('spool-retry').textContent = formatNumber(spools.retry?.depth ?? 0);
+      document.getElementById('spool-dead').textContent = formatNumber(spools.dead_letter?.depth ?? 0);
+      document.getElementById('spool-failed').textContent = formatNumber(spools.failed?.depth ?? 0);
       document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
     }
 
-    // ── Delivery Chart ──────────────────────────────────────────────────
-    function renderDeliveryChart() {
-      const container = document.getElementById('delivery-chart');
-      container.innerHTML = '';
-      const bars = 48;
-      for (let i = 0; i < bars; i++) {
-        const delivered = Math.random() * 180 + 40;
-        const bounced = Math.random() * 20 + 3;
-
-        const barGroup = document.createElement('div');
-        barGroup.style.cssText = `flex:1; display:flex; flex-direction:column-reverse; gap:1px; height:100%;`;
-
-        const dBar = document.createElement('div');
-        dBar.className = 'chart-bar';
-        dBar.style.cssText = `height:${(delivered/240)*100}%; background: var(--gradient-success);`;
-        dBar.innerHTML = `<div class="chart-bar-tooltip">${Math.floor(delivered * 100)} delivered</div>`;
-
-        const bBar = document.createElement('div');
-        bBar.className = 'chart-bar';
-        bBar.style.cssText = `height:${(bounced/240)*100}%; background: var(--gradient-danger);`;
-        bBar.innerHTML = `<div class="chart-bar-tooltip">${Math.floor(bounced * 100)} bounced</div>`;
-
-        barGroup.appendChild(dBar);
-        barGroup.appendChild(bBar);
-        container.appendChild(barGroup);
-      }
+    function updateMetrics(m) {
+      const d = m.delivery ?? {};
+      const rate = d.success_rate != null ? (d.success_rate * 100).toFixed(1) + '%' : '--';
+      document.getElementById('stat-sent').textContent = formatNumber(d.total_sent ?? 0);
+      document.getElementById('stat-delivered').textContent = formatNumber(d.delivered ?? 0);
+      document.getElementById('stat-bounced').textContent = formatNumber(d.bounced ?? 0);
+      document.getElementById('stat-deferred').textContent = formatNumber(d.deferred ?? 0);
+      document.getElementById('stat-sent-change').textContent = rate + ' success rate';
+      const latency = m.smtp?.avg_latency_ms ?? 0;
+      document.getElementById('stat-latency').innerHTML = latency + '<span style="font-size:14px">ms</span>';
     }
 
-    // ── IP Health Table ─────────────────────────────────────────────────
-    function renderIPTable() {
-      const ips = [
-        { ip: '203.0.113.10', health: 0.98, sent: 450000, r4xx: 0.012, r5xx: 0.003, tls: 0.995, status: 'healthy' },
-        { ip: '203.0.113.11', health: 0.85, sent: 120000, r4xx: 0.025, r5xx: 0.008, tls: 0.98, status: 'warming' },
-        { ip: '203.0.113.12', health: 0.92, sent: 380000, r4xx: 0.018, r5xx: 0.005, tls: 0.99, status: 'healthy' },
-        { ip: '2001:db8::1', health: 0.95, sent: 280000, r4xx: 0.015, r5xx: 0.004, tls: 0.99, status: 'healthy' },
-        { ip: '203.0.113.20', health: 0, sent: 0, r4xx: 0, r5xx: 0, tls: 0, status: 'disabled' },
-      ];
-
+    async function renderIPTable() {
       const tbody = document.getElementById('ip-table-body');
-      tbody.innerHTML = ips.map(ip => {
-        let healthColor;
-        if (ip.health > 0.9) {
-          healthColor = 'var(--accent-green)';
-        } else if (ip.health > 0.7) {
-          healthColor = 'var(--accent-orange)';
-        } else {
-          healthColor = 'var(--accent-red)';
-        }
-        return `<tr>
-          <td style="font-family:monospace; font-weight:500;">${ip.ip}</td>
-          <td>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <div class="health-bar"><div class="health-fill" style="width:${ip.health*100}%; background:${healthColor};"></div></div>
-              <span style="font-size:12px; color:${healthColor};">${Math.round(ip.health*100)}%</span>
-            </div>
-          </td>
-          <td>${formatNumber(ip.sent)}</td>
-          <td>${(ip.r4xx*100).toFixed(1)}%</td>
-          <td>${(ip.r5xx*100).toFixed(1)}%</td>
-          <td>${(ip.tls*100).toFixed(1)}%</td>
-          <td><span class="badge badge-${ip.status}">${ip.status}</span></td>
-        </tr>`;
-      }).join('');
-    }
-
-    // ── Recent Logs ─────────────────────────────────────────────────────
-    function renderLogs() {
-      const statuses = ['delivered', 'delivered', 'delivered', 'delivered', 'bounced', 'deferred', 'delivered', 'delivered'];
-      const domains = ['gmail.com', 'outlook.com', 'yahoo.com', 'protonmail.com', 'icloud.com', 'fastmail.com'];
-      const container = document.getElementById('log-container');
-      container.innerHTML = '';
-
-      for (let i = 0; i < 20; i++) {
-        const status = statuses[Math.floor(Math.random() * statuses.length)];
-        const domain = domains[Math.floor(Math.random() * domains.length)];
-        const time = new Date(Date.now() - Math.random() * 3600000).toLocaleTimeString();
-
-        container.innerHTML += `
-          <div class="log-entry">
-            <span class="log-time">${time}</span>
-            <span class="log-status log-${status}">${status}</span>
-            <span class="log-recipient">user${Math.floor(Math.random()*9999)}@${domain}</span>
-          </div>`;
+      try {
+        const res = await fetch(API_BASE + '/api/ips', { headers: authHeaders() });
+        if (!res.ok) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No data</td></tr>'; return; }
+        const { ips } = await res.json();
+        if (!ips || ips.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No IPs configured</td></tr>'; return; }
+        tbody.innerHTML = ips.map(ip => {
+          const health = ip.health_score ?? 0;
+          const healthColor = health > 0.9 ? 'var(--accent-green)' : health > 0.7 ? 'var(--accent-orange)' : 'var(--accent-red)';
+          const status = ip.disabled ? 'disabled' : health > 0.9 ? 'healthy' : 'degraded';
+          return `<tr>
+            <td style="font-family:monospace;font-weight:500">${ip.ip_address}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="health-bar"><div class="health-fill" style="width:${health*100}%;background:${healthColor}"></div></div>
+                <span style="font-size:12px;color:${healthColor}">${Math.round(health*100)}%</span>
+              </div>
+            </td>
+            <td>${formatNumber(ip.total_sent ?? 0)}</td>
+            <td>${((ip.rate_4xx ?? 0)*100).toFixed(1)}%</td>
+            <td>${((ip.rate_5xx ?? 0)*100).toFixed(1)}%</td>
+            <td>${(((1 - (ip.tls_fail_rate ?? 0)))*100).toFixed(1)}%</td>
+            <td><span class="badge badge-${status}">${status}</span></td>
+          </tr>`;
+        }).join('');
+      } catch {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">Failed to load</td></tr>';
       }
     }
 
-    // ── Top Domains ─────────────────────────────────────────────────────
-    function renderDomains() {
-      const domains = [
-        { name: 'gmail.com', sent: 450000, rate: 98.5 },
-        { name: 'outlook.com', sent: 280000, rate: 97.2 },
-        { name: 'yahoo.com', sent: 180000, rate: 96.8 },
-        { name: 'protonmail.com', sent: 45000, rate: 99.1 },
-        { name: 'icloud.com', sent: 32000, rate: 97.8 },
-        { name: 'fastmail.com', sent: 18000, rate: 99.5 },
-        { name: 'aol.com', sent: 12000, rate: 95.2 },
-        { name: 'zoho.com', sent: 8500, rate: 98 },
-      ];
-
-      const container = document.getElementById('domain-container');
-      container.innerHTML = domains.map(d => `
-        <div class="domain-row">
-          <div style="flex:1;">
-            <div class="domain-name">${d.name}</div>
-            <div class="domain-bar"><div class="domain-bar-fill" style="width:${d.rate}%;"></div></div>
-          </div>
-          <div class="domain-stats">
-            <span>${formatNumber(d.sent)} sent</span>
-            <span style="color:var(--accent-green);">${d.rate}%</span>
-          </div>
-        </div>
-      `).join('');
+    async function renderLogs() {
+      const container = document.getElementById('log-container');
+      try {
+        const res = await fetch(API_BASE + '/api/logs?per_page=20', { headers: authHeaders() });
+        if (!res.ok) { container.innerHTML = '<div style="color:var(--text-muted);padding:12px">No data</div>'; return; }
+        const { data } = await res.json();
+        if (!data || data.length === 0) { container.innerHTML = '<div style="color:var(--text-muted);padding:12px">No delivery events yet</div>'; return; }
+        container.innerHTML = data.map(row => `
+          <div class="log-entry">
+            <span class="log-time">${new Date(row.timestamp).toLocaleTimeString()}</span>
+            <span class="log-status log-${row.status}">${row.status}</span>
+            <span class="log-recipient">${row.recipient}</span>
+          </div>`).join('');
+      } catch {
+        container.innerHTML = '<div style="color:var(--text-muted);padding:12px">Failed to load</div>';
+      }
     }
 
-    // ── WebSocket Connection ────────────────────────────────────────────
+    async function renderDomains() {
+      const container = document.getElementById('domain-container');
+      try {
+        const res = await fetch(API_BASE + '/api/domains/stats', { headers: authHeaders() });
+        if (!res.ok) { container.innerHTML = '<div style="color:var(--text-muted);padding:12px">No data</div>'; return; }
+        const { domains } = await res.json();
+        if (!domains || domains.length === 0) { container.innerHTML = '<div style="color:var(--text-muted);padding:12px">No active domains</div>'; return; }
+        const max = domains[0].queue_depth || 1;
+        container.innerHTML = domains.map(d => `
+          <div class="domain-row">
+            <div style="flex:1">
+              <div class="domain-name">${d.domain}</div>
+              <div class="domain-bar"><div class="domain-bar-fill" style="width:${Math.min(100,(d.queue_depth/max)*100)}%"></div></div>
+            </div>
+            <div class="domain-stats">
+              <span>${formatNumber(d.queue_depth)} queued</span>
+            </div>
+          </div>`).join('');
+      } catch {
+        container.innerHTML = '<div style="color:var(--text-muted);padding:12px">Failed to load</div>';
+      }
+    }
+
     function connectWebSocket() {
       try {
         const wsProtocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(`${wsProtocol}//${globalThis.location.host}/ws`);
-        ws.onopen = () => console.log('WebSocket connected');
         ws.onmessage = (e) => {
-          const data = JSON.parse(e.data);
-          if (data.type === 'metrics_update') {
-            // Update real-time metrics
-          }
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'metrics_update') {
+              const d = msg.data;
+              document.getElementById('stat-queue').textContent = formatNumber(d.queue_depth ?? 0);
+              document.getElementById('nav-queue-badge').textContent = formatNumber(d.queue_depth ?? 0);
+              const spools = d.spools ?? {};
+              document.getElementById('spool-incoming').textContent = formatNumber(spools.incoming ?? 0);
+              document.getElementById('spool-active').textContent = formatNumber(spools.active ?? 0);
+              document.getElementById('spool-deferred').textContent = formatNumber(spools.deferred ?? 0);
+              document.getElementById('spool-retry').textContent = formatNumber(spools.retry ?? 0);
+              document.getElementById('spool-dead').textContent = formatNumber(spools.dead_letter ?? 0);
+              document.getElementById('spool-failed').textContent = formatNumber(spools.failed ?? 0);
+            }
+          } catch {}
         };
         ws.onclose = () => setTimeout(connectWebSocket, 5000);
         ws.onerror = (err) => console.error('WebSocket error:', err);
       } catch (e) { console.error('WebSocket connect failed:', e); }
     }
 
-    // ── Export ─────────────────────────────────────────────────────────
     function exportCSV() {
-      const token = localStorage.getItem('srmta_token');
-      fetch(API_BASE + '/api/logs/export?limit=10000', {
-        headers: { 'Authorization': 'Bearer ' + token }
-      })
-      .then(res => res.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `srmta-logs-${Date.now()}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-      })
-      .catch(err => console.error('Export failed:', err));
+      const a = document.createElement('a');
+      a.href = API_BASE + '/api/logs/export?limit=10000';
+      a.download = `srmta-logs-${Date.now()}.csv`;
+      // Pass auth via header not possible for download links; open in new tab as fallback
+      window.open(API_BASE + '/api/logs/export?limit=10000');
     }
 
-    function sendTestEmail() {
-      alert('Test email would be sent via POST /api/send');
+    async function sendTestEmail() {
+      const from = prompt('From address:');
+      const to = prompt('To address:');
+      if (!from || !to) return;
+      try {
+        const res = await fetch(API_BASE + '/api/send', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from, to, subject: 'SRMTA Test', text: 'Test message from SRMTA dashboard.' }),
+        });
+        const data = await res.json();
+        alert(res.ok ? 'Queued: ' + JSON.stringify(data) : 'Error: ' + JSON.stringify(data));
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      }
     }
 
-    // ── Initialize ──────────────────────────────────────────────────────
-    function init() {
-      const data = generateMockData();
-      updateStats(data);
-      renderDeliveryChart();
-      renderIPTable();
-      renderLogs();
-      renderDomains();
+    async function refreshAll() {
+      const [queue, metrics] = await Promise.all([fetchQueueStats(), fetchMetrics()]);
+      if (queue) updateQueueStats(queue);
+      if (metrics) updateMetrics(metrics);
+    }
+
+    async function init() {
+      await refreshAll();
+      await Promise.all([renderIPTable(), renderLogs(), renderDomains()]);
       connectWebSocket();
-
-      // Refresh every 5 seconds
-      setInterval(() => {
-        const newData = generateMockData();
-        updateStats(newData);
-      }, 5000);
-
-      // Refresh chart every 30 seconds
-      setInterval(renderDeliveryChart, 30000);
+      setInterval(refreshAll, 10000);
+      setInterval(() => Promise.all([renderLogs(), renderDomains()]), 30000);
     }
 
     init();

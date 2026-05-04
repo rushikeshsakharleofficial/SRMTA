@@ -32,7 +32,6 @@ type Config struct {
 	Logging   LoggingConfig   `yaml:"logging"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
 	Database  DatabaseConfig  `yaml:"database"`
-	Redis     RedisConfig     `yaml:"redis"`
 	TLS       TLSConfig       `yaml:"tls"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	Throttle  ThrottleConfig  `yaml:"throttle"`
@@ -97,13 +96,12 @@ type DeliveryConfig struct {
 
 // DNSConfig holds DNS resolver settings.
 type DNSConfig struct {
-	Servers       []string      `yaml:"servers"`
-	CacheTTL      time.Duration `yaml:"cache_ttl"`
-	CacheSize     int           `yaml:"cache_size"`
-	Timeout       time.Duration `yaml:"timeout"`
-	PoolSize      int           `yaml:"pool_size"`
-	UseRedisCache bool          `yaml:"use_redis_cache"`
-	EnableDNSSEC  bool          `yaml:"enable_dnssec"`
+	Servers      []string      `yaml:"servers"`
+	CacheTTL     time.Duration `yaml:"cache_ttl"`
+	CacheSize    int           `yaml:"cache_size"`
+	Timeout      time.Duration `yaml:"timeout"`
+	PoolSize     int           `yaml:"pool_size"`
+	EnableDNSSEC bool          `yaml:"enable_dnssec"`
 }
 
 // IPPoolConfig holds IP pool and health scoring settings.
@@ -182,14 +180,6 @@ type DatabaseConfig struct {
 	Charset      string `yaml:"charset"`  // MySQL charset (default: utf8mb4)
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	MaxIdleConns int    `yaml:"max_idle_conns"`
-}
-
-// RedisConfig holds Redis connection settings.
-type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
-	PoolSize int    `yaml:"pool_size"`
 }
 
 // TLSConfig holds TLS settings.
@@ -364,7 +354,6 @@ func mergeConfig(dst, src *Config) {
 	mergeLogging(dst, src)
 	mergeMetrics(dst, src)
 	mergeDatabase(dst, src)
-	mergeRedis(dst, src)
 	mergeTLS(dst, src)
 	mergeRateLimit(dst, src)
 	mergeThrottle(dst, src)
@@ -521,9 +510,6 @@ func mergeDNS(dst, src *Config) {
 	if src.DNS.PoolSize != 0 {
 		dst.DNS.PoolSize = src.DNS.PoolSize
 	}
-	if src.DNS.UseRedisCache {
-		dst.DNS.UseRedisCache = true
-	}
 	if src.DNS.EnableDNSSEC {
 		dst.DNS.EnableDNSSEC = true
 	}
@@ -641,21 +627,6 @@ func mergeDatabase(dst, src *Config) {
 	}
 }
 
-func mergeRedis(dst, src *Config) {
-	if src.Redis.Addr != "" {
-		dst.Redis.Addr = src.Redis.Addr
-	}
-	if src.Redis.Password != "" {
-		dst.Redis.Password = src.Redis.Password
-	}
-	if src.Redis.DB != 0 {
-		dst.Redis.DB = src.Redis.DB
-	}
-	if src.Redis.PoolSize != 0 {
-		dst.Redis.PoolSize = src.Redis.PoolSize
-	}
-}
-
 func mergeTLS(dst, src *Config) {
 	if src.TLS.CertFile != "" {
 		dst.TLS.CertFile = src.TLS.CertFile
@@ -717,7 +688,6 @@ func applyDefaults(cfg *Config) {
 	applyLoggingDefaults(cfg)
 	applyMetricsDefaults(cfg)
 	applyDatabaseDefaults(cfg)
-	applyRedisDefaults(cfg)
 	applyTLSDefaults(cfg)
 }
 
@@ -853,15 +823,6 @@ func applyDatabaseDefaults(cfg *Config) {
 	}
 	if cfg.Database.MaxIdleConns == 0 {
 		cfg.Database.MaxIdleConns = 5
-	}
-}
-
-func applyRedisDefaults(cfg *Config) {
-	if cfg.Redis.Addr == "" {
-		cfg.Redis.Addr = "localhost:6379"
-	}
-	if cfg.Redis.PoolSize == 0 {
-		cfg.Redis.PoolSize = 10
 	}
 }
 

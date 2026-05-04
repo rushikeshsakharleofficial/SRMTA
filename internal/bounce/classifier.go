@@ -91,7 +91,15 @@ func (c *Classifier) ClassifyAndRecord(messageID, sender, recipient string, code
 
 	// Persist to database
 	if c.db != nil {
-		c.db.RecordBounce(record)
+		c.db.RecordBounce(store.BounceEvent{
+			MessageID:  record.MessageID,
+			Sender:     record.Sender,
+			Recipient:  record.Recipient,
+			BounceType: string(record.Type),
+			Code:       record.ResponseCode,
+			Text:       record.ResponseText,
+			Timestamp:  record.Timestamp,
+		})
 	}
 
 	c.logger.Info("Bounce classified",

@@ -61,19 +61,17 @@ type Message struct {
 // Manager orchestrates the multi-spool queue system.
 type Manager struct {
 	cfg        config.QueueConfig
-	redis      *store.RedisStore
 	db         store.Database
 	logger     *logging.Logger
 	retryIntvl []time.Duration
 	spoolDirs  map[SpoolType]string
 	msgChan    chan *Message // Channel for incoming messages to process
-	depth      int64         // atomic: total queue depth
+	depth      int64        // atomic: total queue depth
 	mu         sync.RWMutex
 }
 
 // NewManager creates a new queue manager and initializes spool directories.
-func NewManager(cfg config.QueueConfig, redis *store.RedisStore, db store.Database, logger *logging.Logger) (*Manager, error) {
-	// Parse retry intervals
+func NewManager(cfg config.QueueConfig, db store.Database, logger *logging.Logger) (*Manager, error) {
 	intervals, err := cfg.ParseRetryIntervals()
 	if err != nil {
 		return nil, fmt.Errorf("invalid retry intervals: %w", err)
@@ -81,7 +79,6 @@ func NewManager(cfg config.QueueConfig, redis *store.RedisStore, db store.Databa
 
 	m := &Manager{
 		cfg:        cfg,
-		redis:      redis,
 		db:         db,
 		logger:     logger,
 		retryIntvl: intervals,
@@ -153,11 +150,6 @@ func (m *Manager) Enqueue(sender string, recipients []string, data []byte, remot
 	// Write journal entry for crash recovery
 	if m.cfg.JournalEnabled {
 		m.writeJournal("enqueue", msg)
-	}
-
-	// Update Redis queue state
-	if m.redis != nil {
-		m.redis.EnqueueMessage(msg.ID, msg.Domain, msg.Priority)
 	}
 
 	atomic.AddInt64(&m.depth, 1)
@@ -524,6 +516,7 @@ func (m *Manager) rehydrate() {
 	m.logger.Info("Rehydrating queue from disk spool")
 	var count int64
 
+	diskMessages := make(map[string]struct{})
 	spools := []SpoolType{SpoolIncoming, SpoolActive, SpoolDeferred, SpoolRetry}
 	for _, spool := range spools {
 		for i := 0; i < m.cfg.ShardCount; i++ {
@@ -536,12 +529,46 @@ func (m *Manager) rehydrate() {
 				if !strings.HasSuffix(entry.Name(), ".meta") {
 					continue
 				}
+				msgID := strings.TrimSuffix(entry.Name(), ".meta")
+				diskMessages[msgID] = struct{}{}
 				count++
 			}
 		}
 	}
 
 	atomic.StoreInt64(&m.depth, count)
+
+	// Replay journal: detect messages that were in-flight when the process last crashed.
+	journalEntries, err := ReadJournal(m.cfg.SpoolDir)
+	if err != nil {
+		m.logger.Warn("Failed to read crash-recovery journal", "error", err)
+	} else if len(journalEntries) > 0 {
+		lastAction := make(map[string]string)
+		for _, e := range journalEntries {
+			lastAction[e.MessageID] = e.Action
+		}
+		terminalActions := map[string]bool{"complete": true, "fail": true, "dead-letter": true}
+		var lost int
+		for msgID, action := range lastAction {
+			if terminalActions[action] {
+				continue
+			}
+			if _, onDisk := diskMessages[msgID]; !onDisk {
+				m.logger.Warn("Message in journal not found on disk — likely lost at crash",
+					"message_id", msgID, "last_action", action)
+				lost++
+			}
+		}
+		if lost > 0 {
+			m.logger.Error("Queue crash recovery: messages lost, manual inspection required", "count", lost)
+		} else {
+			m.logger.Info("Journal replay: queue state consistent with disk", "journal_entries", len(journalEntries))
+		}
+		if err := RotateJournal(m.cfg.SpoolDir); err != nil {
+			m.logger.Warn("Failed to rotate journal after rehydration", "error", err)
+		}
+	}
+
 	m.logger.Info("Queue rehydrated", "messages", count)
 }
 
